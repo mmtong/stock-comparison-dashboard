@@ -214,10 +214,28 @@ for ticker, data in stock_data.items():
     if eps_data is not None and not eps_data.empty:
         eps_data = eps_data[(eps_data.index >= start_date) & (eps_data.index <= end_date)]
         eps_data = eps_data.sort_index()
+        values = eps_data.values
+        labels = [""]
+        for i in range(1, len(values)):
+            prev, curr = values[i - 1], values[i]
+            if prev == 0:
+                labels.append("N/A")
+            elif prev < 0 and curr < 0:
+                pct = (abs(prev) - abs(curr)) / abs(prev) * 100
+                labels.append(f"{pct:+.1f}%")
+            elif prev < 0 and curr >= 0:
+                labels.append("Turned +")
+            elif prev > 0 and curr < 0:
+                labels.append("Turned -")
+            else:
+                pct = (curr / prev - 1) * 100
+                labels.append(f"{pct:+.1f}%")
         fig_eps.add_trace(go.Bar(
             x=eps_data.index.strftime("%Y-%m"),
             y=eps_data.values,
             name=ticker,
+            text=labels,
+            textposition="outside",
         ))
 
 fig_eps.update_layout(
@@ -226,7 +244,11 @@ fig_eps.update_layout(
     barmode="group",
     height=400,
     template="plotly_white",
+    margin=dict(t=40),
+    yaxis=dict(autorange=True, rangemode="tozero"),
 )
+fig_eps.update_yaxes(automargin=True, ticksuffix="  ")
+fig_eps.update_traces(cliponaxis=False)
 st.plotly_chart(fig_eps, use_container_width=True)
 
 # --- P/E Over Time ---
