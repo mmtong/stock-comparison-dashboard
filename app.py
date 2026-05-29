@@ -49,7 +49,10 @@ def fetch_stock_data(ticker, start, end):
     financials = stock.financials
     quarterly_financials = stock.quarterly_financials
     quarterly_income_stmt = stock.quarterly_income_stmt
-    earnings_dates = stock.get_earnings_dates(limit=60)
+    try:
+        earnings_dates = stock.get_earnings_dates(limit=60)
+    except Exception:
+        earnings_dates = None
     balance_sheet = stock.balance_sheet
     return hist, info, financials, quarterly_financials, quarterly_income_stmt, earnings_dates, balance_sheet
 
@@ -74,8 +77,8 @@ with st.spinner("Fetching stock data..."):
                 "earnings_dates": earnings_dates,
                 "balance_sheet": balance_sheet,
             }
-        except Exception:
-            failed.append(ticker)
+        except Exception as e:
+            failed.append(f"{ticker} ({e})")
 
 if failed:
     st.error(f"Could not fetch data for: {', '.join(failed)}")
