@@ -6,9 +6,9 @@ from plotly.subplots import make_subplots
 import pandas as pd
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Stock Comparison Dashboard", layout="wide")
+st.set_page_config(page_title="Stock Dashboard", layout="wide")
 
-st.title("Stock Comparison Dashboard")
+st.title("Stock Dashboard")
 
 col_input, col_range = st.columns([3, 1])
 
