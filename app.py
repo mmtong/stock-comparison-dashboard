@@ -178,15 +178,18 @@ normalize = st.checkbox("Normalize prices (% change from start)", value=len(tick
 fig_price = go.Figure()
 for ticker, data in stock_data.items():
     hist = data["history"]
-    if normalize and len(hist) > 0:
-        values = (hist["Close"] / hist["Close"].iloc[0] - 1) * 100
-        fig_price.add_trace(go.Scatter(
-            x=hist.index, y=values, mode="lines", name=ticker,
-        ))
-    else:
-        fig_price.add_trace(go.Scatter(
-            x=hist.index, y=hist["Close"], mode="lines", name=ticker,
-        ))
+    if len(hist) > 0:
+        pct_change = (hist["Close"].iloc[-1] / hist["Close"].iloc[0] - 1) * 100
+        label = f"{ticker} ({pct_change:+.1f}%)"
+        if normalize:
+            values = (hist["Close"] / hist["Close"].iloc[0] - 1) * 100
+            fig_price.add_trace(go.Scatter(
+                x=hist.index, y=values, mode="lines", name=label,
+            ))
+        else:
+            fig_price.add_trace(go.Scatter(
+                x=hist.index, y=hist["Close"], mode="lines", name=label,
+            ))
 
 fig_price.update_layout(
     yaxis_title="% Change" if normalize else "Price (USD)",
