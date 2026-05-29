@@ -202,10 +202,16 @@ st.header("EPS Over Time (Quarterly)")
 
 fig_eps = go.Figure()
 for ticker, data in stock_data.items():
+    eps_data = None
     ed = data["earnings_dates"]
     if ed is not None and not ed.empty and "Reported EPS" in ed.columns:
         eps_data = ed["Reported EPS"].dropna().sort_index()
         eps_data.index = eps_data.index.tz_localize(None) if eps_data.index.tz is None else eps_data.index.tz_convert(None)
+    if eps_data is None or eps_data.empty:
+        qi = data["quarterly_income_stmt"]
+        if qi is not None and not qi.empty and "Diluted EPS" in qi.index:
+            eps_data = qi.loc["Diluted EPS"].dropna().sort_index()
+    if eps_data is not None and not eps_data.empty:
         eps_data = eps_data[(eps_data.index >= start_date) & (eps_data.index <= end_date)]
         eps_data = eps_data.sort_index()
         fig_eps.add_trace(go.Bar(
@@ -228,11 +234,19 @@ st.header("P/E Ratio Over Time")
 
 fig_pe = go.Figure()
 for ticker, data in stock_data.items():
-    ed = data["earnings_dates"]
     hist = data["history"]
-    if ed is not None and not ed.empty and "Reported EPS" in ed.columns and not hist.empty:
+    if hist.empty:
+        continue
+    eps_data = None
+    ed = data["earnings_dates"]
+    if ed is not None and not ed.empty and "Reported EPS" in ed.columns:
         eps_data = ed["Reported EPS"].dropna().sort_index()
         eps_data.index = eps_data.index.tz_localize(None) if eps_data.index.tz is None else eps_data.index.tz_convert(None)
+    if eps_data is None or eps_data.empty:
+        qi = data["quarterly_income_stmt"]
+        if qi is not None and not qi.empty and "Diluted EPS" in qi.index:
+            eps_data = qi.loc["Diluted EPS"].dropna().sort_index()
+    if eps_data is not None and not eps_data.empty:
         eps_data = eps_data.sort_index()
         ttm_eps = eps_data.rolling(4).sum().dropna()
         if len(ttm_eps) < 1:
