@@ -386,8 +386,8 @@ for ticker, data in stock_data.items():
                 if pd.notna(eq_val) and eq_val != 0:
                     equity = eq_val
             if equity is not None:
-                de_ratio = (debt[date] / equity) * 100
-                labels.append(f"D/E: {de_ratio:.0f}%")
+                de_ratio = debt[date] / equity
+                labels.append(f"D/E: {de_ratio:.2f}")
             else:
                 labels.append("")
         fig_debt.add_trace(go.Bar(
@@ -409,6 +409,7 @@ fig_debt.update_layout(
 fig_debt.update_yaxes(automargin=True, ticksuffix="  ")
 fig_debt.update_traces(cliponaxis=False)
 st.plotly_chart(fig_debt, use_container_width=True)
+st.caption("A D/E ratio greater than 1.0 generally indicates debt exceeds equity.")
 
 # --- Profit Margin Over Time ---
 st.header("Profit Margin Over Time")
