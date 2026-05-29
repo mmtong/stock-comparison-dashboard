@@ -168,7 +168,10 @@ display_df["Dividend Yield"] = display_df["Dividend Yield"].apply(fmt_pct)
 display_df["% From 52W High"] = display_df["% From 52W High"].apply(lambda x: fmt_number(x, decimals=1) + "%" if x is not None and not pd.isna(x) else "N/A")
 display_df["% From 52W Low"] = display_df["% From 52W Low"].apply(lambda x: fmt_number(x, decimals=1) + "%" if x is not None and not pd.isna(x) else "N/A")
 
-st.dataframe(display_df, use_container_width=True)
+transposed_df = display_df.T
+transposed_df.columns = [f"{display_df.loc[t, 'Company']} ({t})" for t in transposed_df.columns]
+transposed_df = transposed_df.drop("Company")
+st.dataframe(transposed_df, use_container_width=True)
 
 # --- Price Chart ---
 st.header("Stock Price History")
