@@ -171,7 +171,12 @@ display_df["% From 52W Low"] = display_df["% From 52W Low"].apply(lambda x: fmt_
 transposed_df = display_df.T
 transposed_df.columns = [f"{display_df.loc[t, 'Company']} ({t})" for t in transposed_df.columns]
 transposed_df = transposed_df.drop("Company")
-st.dataframe(transposed_df, use_container_width=True)
+st.dataframe(
+    transposed_df.style.set_properties(**{"text-align": "center"}).set_table_styles(
+        [{"selector": "th.col_heading", "props": [("text-align", "center")]}]
+    ),
+    use_container_width=True,
+)
 
 # --- Price Chart ---
 st.header("Stock Price History")
