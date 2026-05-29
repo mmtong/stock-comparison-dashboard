@@ -15,7 +15,7 @@ col_input, col_range = st.columns([3, 1])
 with col_input:
     tickers_input = st.text_input(
         "Enter ticker symbols (comma-separated)",
-        value="AAPL, MSFT",
+        value="COST, WMT",
         placeholder="e.g. AAPL, MSFT, GOOGL",
     )
 
