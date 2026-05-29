@@ -378,10 +378,24 @@ for ticker, data in stock_data.items():
     bs = data["balance_sheet"]
     if bs is not None and not bs.empty and "Total Debt" in bs.index:
         debt = bs.loc["Total Debt"].dropna().sort_index()
+        labels = []
+        for date in debt.index:
+            equity = None
+            if "Stockholders Equity" in bs.index:
+                eq_val = bs.loc["Stockholders Equity"].get(date)
+                if pd.notna(eq_val) and eq_val != 0:
+                    equity = eq_val
+            if equity is not None:
+                de_ratio = (debt[date] / equity) * 100
+                labels.append(f"D/E: {de_ratio:.0f}%")
+            else:
+                labels.append("")
         fig_debt.add_trace(go.Bar(
             x=debt.index.strftime("%Y"),
             y=debt.values,
             name=ticker,
+            text=labels,
+            textposition="outside",
         ))
 
 fig_debt.update_layout(
@@ -389,7 +403,11 @@ fig_debt.update_layout(
     barmode="group",
     height=400,
     template="plotly_white",
+    margin=dict(t=40),
+    yaxis=dict(autorange=True, rangemode="tozero"),
 )
+fig_debt.update_yaxes(automargin=True, ticksuffix="  ")
+fig_debt.update_traces(cliponaxis=False)
 st.plotly_chart(fig_debt, use_container_width=True)
 
 # --- Profit Margin Over Time ---
