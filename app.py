@@ -171,12 +171,19 @@ display_df["% From 52W Low"] = display_df["% From 52W Low"].apply(lambda x: fmt_
 transposed_df = display_df.T
 transposed_df.columns = [f"{display_df.loc[t, 'Company']} ({t})" for t in transposed_df.columns]
 transposed_df = transposed_df.drop("Company")
-st.dataframe(
-    transposed_df.style.set_properties(**{"text-align": "center"}).set_table_styles(
-        [{"selector": "th.col_heading", "props": [("text-align", "center")]}]
-    ),
-    use_container_width=True,
-)
+
+html = '<table style="width:100%; border-collapse:collapse;">'
+html += '<tr style="border-bottom:2px solid #ddd;"><th style="text-align:left; padding:8px;"></th>'
+for col in transposed_df.columns:
+    html += f'<th style="text-align:center; padding:8px;">{col}</th>'
+html += '</tr>'
+for row_label, row_data in transposed_df.iterrows():
+    html += f'<tr style="border-bottom:1px solid #eee;"><td style="text-align:left; padding:8px; font-weight:600;">{row_label}</td>'
+    for val in row_data:
+        html += f'<td style="text-align:center; padding:8px;">{val}</td>'
+    html += '</tr>'
+html += '</table>'
+st.markdown(html, unsafe_allow_html=True)
 
 # --- Price Chart ---
 st.header("Stock Price History")
