@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import pandas as pd
+import requests
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Stock Dashboard", layout="wide")
@@ -46,6 +47,38 @@ start_date = end_date - timedelta(days=range_map[time_range])
 shared_x_range = [start_date, end_date]
 
 
+# Load FMP API key from Streamlit secrets (set in .streamlit/secrets.toml locally
+# and in the Streamlit Cloud dashboard under App Settings > Secrets).
+FMP_API_KEY = st.secrets.get("FMP_API_KEY", "")
+
+
+@st.cache_data(ttl=300)
+def fetch_fmp_eps(ticker):
+    """Fetch full quarterly EPS history from Financial Modeling Prep.
+    Returns a tz-naive DatetimeIndex Series or None on failure."""
+    if not FMP_API_KEY or FMP_API_KEY == "your_fmp_api_key_here":
+        return None
+    try:
+        url = (
+            f"https://financialmodelingprep.com/api/v3/historical/earning_calendar/"
+            f"{ticker}?apikey={FMP_API_KEY}"
+        )
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        records = resp.json()
+        if not records:
+            return None
+        df = pd.DataFrame(records)
+        df = df[df["eps"].notna()]
+        if df.empty:
+            return None
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date").sort_index()
+        return df["eps"].rename(ticker)
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=300)
 def fetch_stock_data(ticker, start, end):
     stock = yf.Ticker(ticker)
@@ -75,12 +108,19 @@ def build_eps_series(data):
     """Return (eps_series, is_quarterly) using the longest reliable source.
 
     Priority:
-      1. get_earnings_dates  - long quarterly history (~10+ yrs) but often
-         blocked on datacenter IPs.
-      2. income_stmt         - annual EPS (~4 yrs). Reliable on Cloud and covers
-         far more time than the 5-quarter source below. Each value is already a
-         trailing-12-month figure, so it must NOT be re-rolled for TTM.
-      3. quarterly_income_stmt - only ~5 recent quarters; last resort."""
+      1. FMP API   - long quarterly history (30+ yrs), works on Cloud. Requires
+                     FMP_API_KEY in Streamlit secrets.
+      2. yfinance get_earnings_dates - long quarterly history but often blocked
+                     from datacenter IPs (Streamlit Cloud).
+      3. income_stmt (annual) - ~4 yrs, reliable fallback on Cloud.
+                     Already a 12-month figure — must NOT be re-rolled for TTM.
+      4. quarterly_income_stmt - only ~5 recent quarters, last resort."""
+    # 1. FMP
+    fmp = data.get("fmp_eps")
+    if fmp is not None and not fmp.empty:
+        return fmp, True
+
+    # 2. yfinance get_earnings_dates
     ed = data["earnings_dates"]
     if ed is not None and not ed.empty and "Reported EPS" in ed.columns:
         s = ed["Reported EPS"].dropna().sort_index()
@@ -88,12 +128,14 @@ def build_eps_series(data):
         if not s.empty:
             return s, True
 
+    # 3. Annual income statement
     ist = data["income_stmt"]
     if ist is not None and not ist.empty and "Diluted EPS" in ist.index:
         s = ist.loc["Diluted EPS"].dropna().sort_index()
         if not s.empty:
             return s, False
 
+    # 4. Short quarterly fallback
     qi = data["quarterly_income_stmt"]
     if qi is not None and not qi.empty and "Diluted EPS" in qi.index:
         s = qi.loc["Diluted EPS"].dropna().sort_index()
@@ -122,6 +164,7 @@ with st.spinner("Fetching stock data..."):
                 "quarterly_income_stmt": quarterly_income_stmt,
                 "income_stmt": income_stmt,
                 "earnings_dates": earnings_dates,
+                "fmp_eps": fetch_fmp_eps(ticker),
                 "balance_sheet": balance_sheet,
             }
         except Exception as e:
