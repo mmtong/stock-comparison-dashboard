@@ -18,6 +18,16 @@ def render_chart(fig):
     fig.update_layout(legend=BOTTOM_LEGEND)
     st.plotly_chart(fig, use_container_width=True)
 
+
+# Rolling-average window (trading days) for smoothing the P/E line, scaled to the
+# selected time range so short views aren't over-smoothed and long views aren't
+# left jagged.
+PE_SMOOTH_WINDOWS = {"1M": 3, "3M": 5, "6M": 10, "1Y": 20, "2Y": 30, "5Y": 60, "10Y": 90}
+
+
+def pe_smooth_window(time_range):
+    return PE_SMOOTH_WINDOWS.get(time_range, 30)
+
 AV_DAILY_LIMIT = 25  # Alpha Vantage free tier: 25 requests/day (resets at UTC midnight)
 AV_USAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".av_usage.json")
 
@@ -459,8 +469,9 @@ for ticker, data in stock_data.items():
                 pe_series.append({"date": trade_date, "pe": price / past_eps.iloc[-1]})
         if pe_series:
             pe_df = pd.DataFrame(pe_series)
+            smoothed = pe_df["pe"].rolling(pe_smooth_window(time_range), min_periods=1).mean()
             fig_pe.add_trace(go.Scatter(
-                x=pe_df["date"], y=pe_df["pe"],
+                x=pe_df["date"], y=smoothed,
                 mode="lines", name=ticker_label(ticker),
             ))
 
@@ -473,6 +484,7 @@ fig_pe.update_layout(
     xaxis=dict(range=shared_x_range, type="date"),
 )
 render_chart(fig_pe)
+st.caption(f"P/E line smoothed with a {pe_smooth_window(time_range)}-trading-day rolling average.")
 
 # --- Revenue & Earnings Charts ---
 st.header("Revenue & Earnings")
@@ -749,8 +761,11 @@ if deep_ticker_input:
                     pe_dates.append(trade_date)
                     pe_vals.append(price / past.iloc[-1])
             if pe_vals:
+                pe_smoothed = pd.Series(pe_vals).rolling(
+                    pe_smooth_window(dd_time_range), min_periods=1
+                ).mean()
                 fig_dd.add_trace(
-                    go.Scatter(x=pe_dates, y=pe_vals, mode="lines",
+                    go.Scatter(x=pe_dates, y=pe_smoothed, mode="lines",
                                name="P/E", line=dict(color="#ff7f0e")),
                     row=2, col=1,
                 )
@@ -788,7 +803,10 @@ if deep_ticker_input:
         fig_dd.update_xaxes(range=dd_x_range, type="date")
         fig_dd.update_xaxes(title_text="Date", row=3, col=1)
         st.plotly_chart(fig_dd, use_container_width=True)
-        st.caption(f"{ticker_label(deep_ticker_input, dd_info)} — EPS source: {source_label}")
+        st.caption(
+            f"{ticker_label(deep_ticker_input, dd_info)} — EPS source: {source_label} · "
+            f"P/E smoothed with a {pe_smooth_window(dd_time_range)}-trading-day rolling average."
+        )
     elif dd_hist is not None:
         st.warning(f"No data found for {deep_ticker_input}.")
 
