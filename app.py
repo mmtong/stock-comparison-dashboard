@@ -190,6 +190,16 @@ if not stock_data:
     st.warning("No valid stock data found. Check your ticker symbols.")
     st.stop()
 
+
+def ticker_label(ticker, info=None):
+    """Return 'Company Name (TICKER)' for chart legends, or just the ticker
+    if no company name is available."""
+    if info is None:
+        info = stock_data.get(ticker, {}).get("info", {}) or {}
+    name = info.get("shortName") or info.get("longName")
+    return f"{name} ({ticker})" if name else ticker
+
+
 # --- Key Metrics Table ---
 st.header("Key Fundamentals")
 
@@ -299,7 +309,7 @@ for ticker, data in stock_data.items():
     if len(hist) > 0:
         x_dates = hist.index.tz_localize(None) if hist.index.tz else hist.index
         pct_change = (hist["Close"].iloc[-1] / hist["Close"].iloc[0] - 1) * 100
-        label = f"{ticker} ({pct_change:+.1f}%)"
+        label = f"{ticker_label(ticker)}: {pct_change:+.1f}%"
         if normalize:
             values = (hist["Close"] / hist["Close"].iloc[0] - 1) * 100
             fig_price.add_trace(go.Scatter(
@@ -350,7 +360,7 @@ for ticker, data in stock_data.items():
         fig_eps.add_trace(go.Bar(
             x=eps_data.index,
             y=eps_data.values,
-            name=ticker,
+            name=ticker_label(ticker),
             text=labels,
             textposition="outside",
         ))
@@ -373,10 +383,10 @@ st.plotly_chart(fig_eps, use_container_width=True)
 source_lines = []
 for ticker, (label, av_status) in eps_sources.items():
     if "Alpha Vantage" in label:
-        source_lines.append(f"**{ticker}**: {label}")
+        source_lines.append(f"**{ticker_label(ticker)}**: {label}")
     else:
         extra = f" — Alpha Vantage unavailable: {av_status}" if av_status else ""
-        source_lines.append(f"**{ticker}**: {label}{extra}")
+        source_lines.append(f"**{ticker_label(ticker)}**: {label}{extra}")
 st.caption("EPS data source — " + "  |  ".join(source_lines))
 
 # --- P/E Over Time ---
@@ -405,7 +415,7 @@ for ticker, data in stock_data.items():
             pe_df = pd.DataFrame(pe_series)
             fig_pe.add_trace(go.Scatter(
                 x=pe_df["date"], y=pe_df["pe"],
-                mode="lines", name=ticker,
+                mode="lines", name=ticker_label(ticker),
             ))
 
 fig_pe.update_layout(
@@ -435,7 +445,7 @@ with rev_col:
             fig_rev.add_trace(go.Bar(
                 x=revenue.index.strftime("%Y"),
                 y=revenue.values,
-                name=ticker,
+                name=ticker_label(ticker),
                 text=labels,
                 textposition="outside",
             ))
@@ -477,7 +487,7 @@ with earn_col:
             fig_earn.add_trace(go.Bar(
                 x=net_income.index.strftime("%Y"),
                 y=net_income.values,
-                name=ticker,
+                name=ticker_label(ticker),
                 text=labels,
                 textposition="outside",
             ))
@@ -516,7 +526,7 @@ for ticker, data in stock_data.items():
         fig_debt.add_trace(go.Bar(
             x=debt.index.strftime("%Y"),
             y=debt.values,
-            name=ticker,
+            name=ticker_label(ticker),
             text=labels,
             textposition="outside",
         ))
@@ -553,7 +563,7 @@ for ticker, data in stock_data.items():
                     x=common_idx,
                     y=margin.values,
                     mode="lines+markers",
-                    name=ticker,
+                    name=ticker_label(ticker),
                 ))
 
 fig_margin.update_layout(
@@ -576,7 +586,7 @@ for ticker, data in stock_data.items():
             x=q_revenue.index,
             y=q_revenue.values,
             mode="lines+markers",
-            name=ticker,
+            name=ticker_label(ticker),
         ))
 
 fig_qrev.update_layout(
@@ -595,6 +605,7 @@ for ticker, data in stock_data.items():
     info = data["info"]
     div_data.append({
         "Ticker": ticker,
+        "Label": ticker_label(ticker, info),
         "Dividend Yield (%)": (info.get("trailingAnnualDividendYield") or 0) * 100,
         "Dividend Rate ($)": info.get("dividendRate") or 0,
         "Payout Ratio (%)": (info.get("payoutRatio") or 0) * 100,
@@ -607,19 +618,19 @@ if div_df["Dividend Yield (%)"].sum() > 0:
     with dcol1:
         fig_dy = px.bar(
             div_df, x="Ticker", y="Dividend Yield (%)",
-            color="Ticker", title="Dividend Yield",
+            color="Label", title="Dividend Yield",
             template="plotly_white",
         )
-        fig_dy.update_layout(height=350, showlegend=False)
+        fig_dy.update_layout(height=350, legend_title_text="")
         st.plotly_chart(fig_dy, use_container_width=True)
 
     with dcol2:
         fig_pr = px.bar(
             div_df, x="Ticker", y="Payout Ratio (%)",
-            color="Ticker", title="Payout Ratio",
+            color="Label", title="Payout Ratio",
             template="plotly_white",
         )
-        fig_pr.update_layout(height=350, showlegend=False)
+        fig_pr.update_layout(height=350, legend_title_text="")
         st.plotly_chart(fig_pr, use_container_width=True)
 else:
     st.info("None of the selected stocks currently pay dividends.")
@@ -731,7 +742,7 @@ if deep_ticker_input:
         fig_dd.update_xaxes(range=dd_x_range, type="date")
         fig_dd.update_xaxes(title_text="Date", row=3, col=1)
         st.plotly_chart(fig_dd, use_container_width=True)
-        st.caption(f"{deep_ticker_input} — EPS source: {source_label}")
+        st.caption(f"{ticker_label(deep_ticker_input, dd_info)} — EPS source: {source_label}")
     elif dd_hist is not None:
         st.warning(f"No data found for {deep_ticker_input}.")
 
