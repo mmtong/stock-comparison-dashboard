@@ -420,39 +420,22 @@ fig_price.update_layout(
 render_chart(fig_price)
 
 # --- EPS Over Time ---
-st.header("EPS Over Time (Quarterly)")
+st.header("EPS Over Time (Yearly)")
 
 fig_eps = go.Figure()
-eps_sources = {}
 for ticker, data in stock_data.items():
-    eps_data, _, source_label = build_eps_series(data)
-    eps_sources[ticker] = (source_label, data.get("av_status", ""))
-    if eps_data is not None and not eps_data.empty:
-        eps_data = eps_data[(eps_data.index >= start_date) & (eps_data.index <= end_date)]
-        eps_data = eps_data.sort_index()
-        values = eps_data.values
-        labels = [""]
-        for i in range(1, len(values)):
-            prev, curr = values[i - 1], values[i]
-            if prev == 0:
-                labels.append("N/A")
-            elif prev < 0 and curr < 0:
-                pct = (abs(prev) - abs(curr)) / abs(prev) * 100
-                labels.append(f"{pct:+.1f}%")
-            elif prev < 0 and curr >= 0:
-                labels.append("Turned +")
-            elif prev > 0 and curr < 0:
-                labels.append("Turned -")
-            else:
-                pct = (curr / prev - 1) * 100
-                labels.append(f"{pct:+.1f}%")
-        fig_eps.add_trace(go.Bar(
-            x=eps_data.index,
-            y=eps_data.values,
-            name=ticker_label(ticker),
-            text=labels,
-            textposition="outside",
-        ))
+    ist = data.get("income_stmt")
+    if ist is not None and not ist.empty and "Diluted EPS" in ist.index:
+        eps_data = ist.loc["Diluted EPS"].dropna().sort_index()
+        eps_data = eps_data[(eps_data.index >= start_date) & (eps_data.index <= end_date)].sort_index()
+        if len(eps_data) > 0:
+            fig_eps.add_trace(go.Bar(
+                x=eps_data.index,
+                y=eps_data.values,
+                name=ticker_label(ticker),
+                text=growth_labels(eps_data.values),
+                textposition="outside",
+            ))
 
 fig_eps.update_layout(
     yaxis_title="EPS ($)",
@@ -467,16 +450,7 @@ fig_eps.update_layout(
 fig_eps.update_yaxes(automargin=True, ticksuffix="  ")
 fig_eps.update_traces(cliponaxis=False)
 render_chart(fig_eps)
-
-# Show which EPS source each ticker used (and why, if Alpha Vantage was skipped).
-source_lines = []
-for ticker, (label, av_status) in eps_sources.items():
-    if "Alpha Vantage" in label:
-        source_lines.append(f"**{ticker_label(ticker)}**: {label}")
-    else:
-        extra = f" — Alpha Vantage unavailable: {av_status}" if av_status else ""
-        source_lines.append(f"**{ticker_label(ticker)}**: {label}{extra}")
-st.caption("EPS data source — " + "  |  ".join(source_lines))
+st.caption("Annual diluted EPS from the income statement (Yahoo Finance). Labels show year-over-year growth.")
 
 # --- P/E Over Time ---
 st.header("P/E Ratio Over Time")
