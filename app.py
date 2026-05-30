@@ -55,13 +55,14 @@ ALPHAVANTAGE_API_KEY = st.secrets.get("ALPHAVANTAGE_API_KEY", "")
 @st.cache_data(ttl=300)
 def fetch_av_eps(ticker):
     """Fetch full quarterly reported-EPS history from Alpha Vantage.
-    Returns a tz-naive DatetimeIndex Series or None on failure.
+    Returns (series_or_None, status_message).
 
     Free tier is 25 calls/day; we make one call per ticker (cached 5 min).
-    A rate-limit/usage notice returns no 'quarterlyEarnings' key, so we
-    return None and the caller falls back to yfinance sources."""
+    Alpha Vantage signals problems with an 'Information', 'Note', or
+    'Error Message' key instead of 'quarterlyEarnings' — we surface that text
+    so the UI can explain why it fell back to yfinance."""
     if not ALPHAVANTAGE_API_KEY or ALPHAVANTAGE_API_KEY == "your_alphavantage_api_key_here":
-        return None
+        return None, "no API key configured"
     try:
         url = (
             f"https://www.alphavantage.co/query?function=EARNINGS"
@@ -72,17 +73,21 @@ def fetch_av_eps(ticker):
         data = resp.json()
         quarters = data.get("quarterlyEarnings")
         if not quarters:
-            return None
+            # Surface AV's own message (rate limit, premium notice, bad symbol).
+            note = data.get("Information") or data.get("Note") or data.get("Error Message")
+            if note:
+                return None, str(note)[:200]
+            return None, "no quarterly data returned"
         df = pd.DataFrame(quarters)
         df["reportedEPS"] = pd.to_numeric(df["reportedEPS"], errors="coerce")
         df = df[df["reportedEPS"].notna()]
         if df.empty:
-            return None
+            return None, "no parseable EPS values"
         df["fiscalDateEnding"] = pd.to_datetime(df["fiscalDateEnding"])
         df = df.set_index("fiscalDateEnding").sort_index()
-        return df["reportedEPS"].rename(ticker)
-    except Exception:
-        return None
+        return df["reportedEPS"].rename(ticker), "ok"
+    except Exception as e:
+        return None, f"request failed: {e}"
 
 
 @st.cache_data(ttl=300)
@@ -111,7 +116,7 @@ def fetch_stock_data(ticker, start, end):
 
 
 def build_eps_series(data):
-    """Return (eps_series, is_quarterly) using the longest reliable source.
+    """Return (eps_series, is_quarterly, source_label) using the longest source.
 
     Priority:
       1. Alpha Vantage - long quarterly history (20+ yrs), works on Cloud.
@@ -124,7 +129,7 @@ def build_eps_series(data):
     # 1. Alpha Vantage
     av = data.get("av_eps")
     if av is not None and not av.empty:
-        return av, True
+        return av, True, "Alpha Vantage (quarterly)"
 
     # 2. yfinance get_earnings_dates
     ed = data["earnings_dates"]
@@ -132,23 +137,23 @@ def build_eps_series(data):
         s = ed["Reported EPS"].dropna().sort_index()
         s.index = s.index.tz_localize(None) if s.index.tz is None else s.index.tz_convert(None)
         if not s.empty:
-            return s, True
+            return s, True, "yfinance earnings dates (quarterly)"
 
     # 3. Annual income statement
     ist = data["income_stmt"]
     if ist is not None and not ist.empty and "Diluted EPS" in ist.index:
         s = ist.loc["Diluted EPS"].dropna().sort_index()
         if not s.empty:
-            return s, False
+            return s, False, "yfinance income statement (annual fallback)"
 
     # 4. Short quarterly fallback
     qi = data["quarterly_income_stmt"]
     if qi is not None and not qi.empty and "Diluted EPS" in qi.index:
         s = qi.loc["Diluted EPS"].dropna().sort_index()
         if not s.empty:
-            return s, True
+            return s, True, "yfinance quarterly income statement (5 quarters)"
 
-    return None, True
+    return None, True, "unavailable"
 
 
 with st.spinner("Fetching stock data..."):
@@ -170,9 +175,11 @@ with st.spinner("Fetching stock data..."):
                 "quarterly_income_stmt": quarterly_income_stmt,
                 "income_stmt": income_stmt,
                 "earnings_dates": earnings_dates,
-                "av_eps": fetch_av_eps(ticker),
                 "balance_sheet": balance_sheet,
             }
+            av_series, av_status = fetch_av_eps(ticker)
+            stock_data[ticker]["av_eps"] = av_series
+            stock_data[ticker]["av_status"] = av_status
         except Exception as e:
             failed.append(f"{ticker} ({e})")
 
@@ -317,8 +324,10 @@ st.plotly_chart(fig_price, use_container_width=True)
 st.header("EPS Over Time (Quarterly)")
 
 fig_eps = go.Figure()
+eps_sources = {}
 for ticker, data in stock_data.items():
-    eps_data, _ = build_eps_series(data)
+    eps_data, _, source_label = build_eps_series(data)
+    eps_sources[ticker] = (source_label, data.get("av_status", ""))
     if eps_data is not None and not eps_data.empty:
         eps_data = eps_data[(eps_data.index >= start_date) & (eps_data.index <= end_date)]
         eps_data = eps_data.sort_index()
@@ -360,6 +369,16 @@ fig_eps.update_yaxes(automargin=True, ticksuffix="  ")
 fig_eps.update_traces(cliponaxis=False)
 st.plotly_chart(fig_eps, use_container_width=True)
 
+# Show which EPS source each ticker used (and why, if Alpha Vantage was skipped).
+source_lines = []
+for ticker, (label, av_status) in eps_sources.items():
+    if "Alpha Vantage" in label:
+        source_lines.append(f"**{ticker}**: {label}")
+    else:
+        extra = f" — Alpha Vantage unavailable: {av_status}" if av_status else ""
+        source_lines.append(f"**{ticker}**: {label}{extra}")
+st.caption("EPS data source — " + "  |  ".join(source_lines))
+
 # --- P/E Over Time ---
 st.header("P/E Ratio Over Time")
 
@@ -368,7 +387,7 @@ for ticker, data in stock_data.items():
     hist = data["history"]
     if hist.empty:
         continue
-    eps_data, is_quarterly = build_eps_series(data)
+    eps_data, is_quarterly, _ = build_eps_series(data)
     if eps_data is not None and not eps_data.empty:
         eps_data = eps_data.sort_index()
         # Quarterly EPS must be summed over 4 quarters for a TTM figure; annual
