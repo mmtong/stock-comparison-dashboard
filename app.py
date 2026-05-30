@@ -28,6 +28,25 @@ PE_SMOOTH_WINDOWS = {"1M": 3, "3M": 5, "6M": 10, "1Y": 20, "2Y": 30, "5Y": 60, "
 def pe_smooth_window(time_range):
     return PE_SMOOTH_WINDOWS.get(time_range, 30)
 
+
+def growth_labels(values):
+    """Period-over-period growth labels (first blank), handling sign changes
+    and negatives so a loss shrinking reads as positive."""
+    labels = [""]
+    for i in range(1, len(values)):
+        prev, curr = values[i - 1], values[i]
+        if prev == 0:
+            labels.append("N/A")
+        elif prev < 0 and curr < 0:
+            labels.append(f"{(abs(prev) - abs(curr)) / abs(prev) * 100:+.1f}%")
+        elif prev < 0 and curr >= 0:
+            labels.append("Turned +")
+        elif prev > 0 and curr < 0:
+            labels.append("Turned -")
+        else:
+            labels.append(f"{(curr / prev - 1) * 100:+.1f}%")
+    return labels
+
 AV_DAILY_LIMIT = 25  # Alpha Vantage free tier: 25 requests/day (resets at UTC midnight)
 AV_USAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".av_usage.json")
 
@@ -562,7 +581,7 @@ with earn_col:
     render_chart(fig_earn)
 
 # --- Total Debt ---
-st.header("Total Debt")
+st.header("Total Debt to Equity")
 
 fig_debt = go.Figure()
 for ticker, data in stock_data.items():
@@ -615,12 +634,15 @@ for ticker, data in stock_data.items():
             revenue = financials.loc["Total Revenue"].dropna().sort_index()
             net_income = financials.loc["Net Income"].dropna().sort_index()
             common_idx = revenue.index.intersection(net_income.index)
-            if len(common_idx) > 0:
-                margin = (net_income[common_idx] / revenue[common_idx]) * 100
+            margin = (net_income[common_idx] / revenue[common_idx]) * 100
+            margin = margin[(margin.index >= start_date) & (margin.index <= end_date)].sort_index()
+            if len(margin) > 0:
                 fig_margin.add_trace(go.Scatter(
-                    x=common_idx,
+                    x=margin.index,
                     y=margin.values,
-                    mode="lines+markers",
+                    mode="lines+markers+text",
+                    text=growth_labels(margin.values),
+                    textposition="top center",
                     name=ticker_label(ticker),
                 ))
 
@@ -629,7 +651,10 @@ fig_margin.update_layout(
     xaxis_title="Date",
     height=400,
     template="plotly_white",
+    margin=dict(t=40),
+    xaxis=dict(range=shared_x_range, type="date"),
 )
+fig_margin.update_traces(cliponaxis=False)
 render_chart(fig_margin)
 
 # --- Quarterly Revenue Trend ---
@@ -640,19 +665,26 @@ for ticker, data in stock_data.items():
     qf = data["quarterly_financials"]
     if qf is not None and not qf.empty and "Total Revenue" in qf.index:
         q_revenue = qf.loc["Total Revenue"].dropna().sort_index()
-        fig_qrev.add_trace(go.Scatter(
-            x=q_revenue.index,
-            y=q_revenue.values,
-            mode="lines+markers",
-            name=ticker_label(ticker),
-        ))
+        q_revenue = q_revenue[(q_revenue.index >= start_date) & (q_revenue.index <= end_date)].sort_index()
+        if len(q_revenue) > 0:
+            fig_qrev.add_trace(go.Scatter(
+                x=q_revenue.index,
+                y=q_revenue.values,
+                mode="lines+markers+text",
+                text=growth_labels(q_revenue.values),
+                textposition="top center",
+                name=ticker_label(ticker),
+            ))
 
 fig_qrev.update_layout(
     yaxis_title="Revenue (USD)",
     xaxis_title="Quarter",
     height=400,
     template="plotly_white",
+    margin=dict(t=40),
+    xaxis=dict(range=shared_x_range, type="date"),
 )
+fig_qrev.update_traces(cliponaxis=False)
 render_chart(fig_qrev)
 
 # --- Dividend Yield Comparison ---
