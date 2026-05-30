@@ -624,4 +624,87 @@ if div_df["Dividend Yield (%)"].sum() > 0:
 else:
     st.info("None of the selected stocks currently pay dividends.")
 
+# --- Single-Company Deep Dive: Price + P/E + EPS (stacked panels) ---
+st.header("Single-Company Deep Dive")
+st.caption(f"Price, P/E, and EPS for one company over the selected period ({time_range}).")
+
+deep_ticker_input = st.text_input(
+    "Enter one ticker for the combined view",
+    value=tickers[0] if tickers else "COST",
+    key="deep_dive_ticker",
+).strip().upper()
+
+if deep_ticker_input:
+    try:
+        dd_hist, dd_info, dd_fin, dd_qfin, dd_qis, dd_is, dd_ed, dd_bs = fetch_stock_data(
+            deep_ticker_input, start_date, end_date
+        )
+    except Exception as e:
+        dd_hist = None
+        st.error(f"Could not fetch data for {deep_ticker_input}: {e}")
+
+    if dd_hist is not None and not dd_hist.empty:
+        dd_av_series, _ = fetch_av_eps(deep_ticker_input)
+        dd_data = {
+            "earnings_dates": dd_ed,
+            "income_stmt": dd_is,
+            "quarterly_income_stmt": dd_qis,
+            "av_eps": dd_av_series,
+        }
+        eps_series, is_quarterly, source_label = build_eps_series(dd_data)
+
+        fig_dd = make_subplots(
+            rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+            row_heights=[0.4, 0.3, 0.3],
+            subplot_titles=("Stock Price (USD)", "P/E Ratio (TTM)", "EPS"),
+        )
+
+        # Row 1: daily closing price
+        dd_dates = dd_hist.index.tz_localize(None) if dd_hist.index.tz else dd_hist.index
+        fig_dd.add_trace(
+            go.Scatter(x=dd_dates, y=dd_hist["Close"], mode="lines",
+                       name="Price", line=dict(color="#1f77b4")),
+            row=1, col=1,
+        )
+
+        # Rows 2 & 3: P/E (daily price / TTM EPS) and EPS bars
+        if eps_series is not None and not eps_series.empty:
+            eps_series = eps_series.sort_index()
+            ttm_eps = eps_series.rolling(4).sum().dropna() if is_quarterly else eps_series
+
+            pe_dates, pe_vals = [], []
+            for trade_date, price in zip(dd_dates, dd_hist["Close"]):
+                past = ttm_eps[ttm_eps.index <= trade_date]
+                if len(past) > 0 and past.iloc[-1] > 0:
+                    pe_dates.append(trade_date)
+                    pe_vals.append(price / past.iloc[-1])
+            if pe_vals:
+                fig_dd.add_trace(
+                    go.Scatter(x=pe_dates, y=pe_vals, mode="lines",
+                               name="P/E", line=dict(color="#ff7f0e")),
+                    row=2, col=1,
+                )
+
+            eps_windowed = eps_series[(eps_series.index >= start_date) & (eps_series.index <= end_date)]
+            fig_dd.add_trace(
+                go.Bar(x=eps_windowed.index, y=eps_windowed.values,
+                       name="EPS", marker_color="#2ca02c"),
+                row=3, col=1,
+            )
+
+        fig_dd.update_layout(
+            height=750,
+            template="plotly_white",
+            hovermode="x unified",
+            showlegend=False,
+            margin=dict(t=40),
+        )
+        # Lock every panel's x-axis to the same selected window.
+        fig_dd.update_xaxes(range=shared_x_range, type="date")
+        fig_dd.update_xaxes(title_text="Date", row=3, col=1)
+        st.plotly_chart(fig_dd, use_container_width=True)
+        st.caption(f"{deep_ticker_input} — EPS source: {source_label}")
+    elif dd_hist is not None:
+        st.warning(f"No data found for {deep_ticker_input}.")
+
 st.caption("Data provided by Yahoo Finance via yfinance. Metrics may be delayed or unavailable for some tickers.")
