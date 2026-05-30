@@ -359,6 +359,7 @@ display_df["% From 52W Low"] = display_df["% From 52W Low"].apply(lambda x: fmt_
 transposed_df = display_df.T
 transposed_df.columns = [f"{display_df.loc[t, 'Company']} ({t})" for t in transposed_df.columns]
 transposed_df = transposed_df.drop("Company")
+transposed_df = transposed_df.rename(index={"Forward P/E": "Forward P/E *"})
 
 html = '<table style="width:100%; border-collapse:collapse;">'
 html += '<tr style="border-bottom:2px solid #ddd;"><th style="text-align:left; padding:8px;"></th>'
@@ -372,6 +373,16 @@ for row_label, row_data in transposed_df.iterrows():
     html += '</tr>'
 html += '</table>'
 st.markdown(html, unsafe_allow_html=True)
+
+# Forward P/E source note: it's current price / analyst consensus forward EPS.
+analyst_parts = []
+for ticker, data in stock_data.items():
+    n = data["info"].get("numberOfAnalystOpinions")
+    analyst_parts.append(f"{ticker}: {n} analysts" if n else f"{ticker}: count N/A")
+st.caption(
+    "\\* Forward P/E = current price ÷ analyst consensus forward EPS estimate "
+    "(Yahoo Finance). Based on " + "; ".join(analyst_parts) + "."
+)
 
 # --- Price Chart ---
 st.header("Stock Price History")
