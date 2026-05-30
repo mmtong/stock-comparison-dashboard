@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="Stock Dashboard", layout="wide")
 
 st.title("Stock Dashboard")
+st.caption(f"Data as of {datetime.today().strftime('%B %d, %Y')}")
 
 col_input, col_range = st.columns([3, 1])
 
