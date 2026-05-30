@@ -9,6 +9,15 @@ import os
 import json
 from datetime import datetime, timedelta, timezone
 
+# Horizontal legend anchored below every chart's plotting area.
+BOTTOM_LEGEND = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title_text="")
+
+
+def render_chart(fig):
+    """Place the legend at the bottom and render full-width."""
+    fig.update_layout(legend=BOTTOM_LEGEND)
+    st.plotly_chart(fig, use_container_width=True)
+
 AV_DAILY_LIMIT = 25  # Alpha Vantage free tier: 25 requests/day (resets at UTC midnight)
 AV_USAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".av_usage.json")
 
@@ -365,7 +374,7 @@ fig_price.update_layout(
     template="plotly_white",
     xaxis=dict(range=shared_x_range, type="date"),
 )
-st.plotly_chart(fig_price, use_container_width=True)
+render_chart(fig_price)
 
 # --- EPS Over Time ---
 st.header("EPS Over Time (Quarterly)")
@@ -414,7 +423,7 @@ fig_eps.update_layout(
 )
 fig_eps.update_yaxes(automargin=True, ticksuffix="  ")
 fig_eps.update_traces(cliponaxis=False)
-st.plotly_chart(fig_eps, use_container_width=True)
+render_chart(fig_eps)
 
 # Show which EPS source each ticker used (and why, if Alpha Vantage was skipped).
 source_lines = []
@@ -463,7 +472,7 @@ fig_pe.update_layout(
     template="plotly_white",
     xaxis=dict(range=shared_x_range, type="date"),
 )
-st.plotly_chart(fig_pe, use_container_width=True)
+render_chart(fig_pe)
 
 # --- Revenue & Earnings Charts ---
 st.header("Revenue & Earnings")
@@ -496,7 +505,7 @@ with rev_col:
     )
     fig_rev.update_yaxes(automargin=True, ticksuffix="  ")
     fig_rev.update_traces(cliponaxis=False)
-    st.plotly_chart(fig_rev, use_container_width=True)
+    render_chart(fig_rev)
 
 with earn_col:
     st.subheader("Annual Net Income")
@@ -538,7 +547,7 @@ with earn_col:
     )
     fig_earn.update_yaxes(automargin=True, ticksuffix="  ")
     fig_earn.update_traces(cliponaxis=False)
-    st.plotly_chart(fig_earn, use_container_width=True)
+    render_chart(fig_earn)
 
 # --- Total Debt ---
 st.header("Total Debt")
@@ -578,7 +587,7 @@ fig_debt.update_layout(
 )
 fig_debt.update_yaxes(automargin=True, ticksuffix="  ")
 fig_debt.update_traces(cliponaxis=False)
-st.plotly_chart(fig_debt, use_container_width=True)
+render_chart(fig_debt)
 st.caption("A D/E ratio greater than 1.0 generally indicates debt exceeds equity.")
 
 # --- Profit Margin Over Time ---
@@ -609,7 +618,7 @@ fig_margin.update_layout(
     height=400,
     template="plotly_white",
 )
-st.plotly_chart(fig_margin, use_container_width=True)
+render_chart(fig_margin)
 
 # --- Quarterly Revenue Trend ---
 st.header("Quarterly Revenue Trend")
@@ -632,7 +641,7 @@ fig_qrev.update_layout(
     height=400,
     template="plotly_white",
 )
-st.plotly_chart(fig_qrev, use_container_width=True)
+render_chart(fig_qrev)
 
 # --- Dividend Yield Comparison ---
 st.header("Dividend Comparison")
@@ -659,7 +668,7 @@ if div_df["Dividend Yield (%)"].sum() > 0:
             template="plotly_white",
         )
         fig_dy.update_layout(height=350, legend_title_text="")
-        st.plotly_chart(fig_dy, use_container_width=True)
+        render_chart(fig_dy)
 
     with dcol2:
         fig_pr = px.bar(
@@ -668,7 +677,7 @@ if div_df["Dividend Yield (%)"].sum() > 0:
             template="plotly_white",
         )
         fig_pr.update_layout(height=350, legend_title_text="")
-        st.plotly_chart(fig_pr, use_container_width=True)
+        render_chart(fig_pr)
 else:
     st.info("None of the selected stocks currently pay dividends.")
 
