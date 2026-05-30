@@ -54,12 +54,53 @@ def fetch_stock_data(ticker, start, end):
     financials = stock.financials
     quarterly_financials = stock.quarterly_financials
     quarterly_income_stmt = stock.quarterly_income_stmt
-    try:
-        earnings_dates = stock.get_earnings_dates(limit=60)
-    except Exception:
-        earnings_dates = None
+    income_stmt = stock.income_stmt
+    # get_earnings_dates is the only LONG quarterly EPS source (~10+ yrs) but its
+    # scraping endpoint is often blocked from datacenter IPs (e.g. Streamlit Cloud).
+    # Retry a couple times; if it still fails we fall back to annual income_stmt.
+    earnings_dates = None
+    for _ in range(3):
+        try:
+            ed = stock.get_earnings_dates(limit=60)
+            if ed is not None and not ed.empty:
+                earnings_dates = ed
+                break
+        except Exception:
+            pass
     balance_sheet = stock.balance_sheet
-    return hist, info, financials, quarterly_financials, quarterly_income_stmt, earnings_dates, balance_sheet
+    return hist, info, financials, quarterly_financials, quarterly_income_stmt, income_stmt, earnings_dates, balance_sheet
+
+
+def build_eps_series(data):
+    """Return (eps_series, is_quarterly) using the longest reliable source.
+
+    Priority:
+      1. get_earnings_dates  - long quarterly history (~10+ yrs) but often
+         blocked on datacenter IPs.
+      2. income_stmt         - annual EPS (~4 yrs). Reliable on Cloud and covers
+         far more time than the 5-quarter source below. Each value is already a
+         trailing-12-month figure, so it must NOT be re-rolled for TTM.
+      3. quarterly_income_stmt - only ~5 recent quarters; last resort."""
+    ed = data["earnings_dates"]
+    if ed is not None and not ed.empty and "Reported EPS" in ed.columns:
+        s = ed["Reported EPS"].dropna().sort_index()
+        s.index = s.index.tz_localize(None) if s.index.tz is None else s.index.tz_convert(None)
+        if not s.empty:
+            return s, True
+
+    ist = data["income_stmt"]
+    if ist is not None and not ist.empty and "Diluted EPS" in ist.index:
+        s = ist.loc["Diluted EPS"].dropna().sort_index()
+        if not s.empty:
+            return s, False
+
+    qi = data["quarterly_income_stmt"]
+    if qi is not None and not qi.empty and "Diluted EPS" in qi.index:
+        s = qi.loc["Diluted EPS"].dropna().sort_index()
+        if not s.empty:
+            return s, True
+
+    return None, True
 
 
 with st.spinner("Fetching stock data..."):
@@ -67,7 +108,7 @@ with st.spinner("Fetching stock data..."):
     failed = []
     for ticker in tickers:
         try:
-            hist, info, financials, quarterly_financials, quarterly_income_stmt, earnings_dates, balance_sheet = fetch_stock_data(
+            hist, info, financials, quarterly_financials, quarterly_income_stmt, income_stmt, earnings_dates, balance_sheet = fetch_stock_data(
                 ticker, start_date, end_date
             )
             if hist.empty:
@@ -79,6 +120,7 @@ with st.spinner("Fetching stock data..."):
                 "financials": financials,
                 "quarterly_financials": quarterly_financials,
                 "quarterly_income_stmt": quarterly_income_stmt,
+                "income_stmt": income_stmt,
                 "earnings_dates": earnings_dates,
                 "balance_sheet": balance_sheet,
             }
@@ -227,15 +269,7 @@ st.header("EPS Over Time (Quarterly)")
 
 fig_eps = go.Figure()
 for ticker, data in stock_data.items():
-    eps_data = None
-    ed = data["earnings_dates"]
-    if ed is not None and not ed.empty and "Reported EPS" in ed.columns:
-        eps_data = ed["Reported EPS"].dropna().sort_index()
-        eps_data.index = eps_data.index.tz_localize(None) if eps_data.index.tz is None else eps_data.index.tz_convert(None)
-    if eps_data is None or eps_data.empty:
-        qi = data["quarterly_income_stmt"]
-        if qi is not None and not qi.empty and "Diluted EPS" in qi.index:
-            eps_data = qi.loc["Diluted EPS"].dropna().sort_index()
+    eps_data, _ = build_eps_series(data)
     if eps_data is not None and not eps_data.empty:
         eps_data = eps_data[(eps_data.index >= start_date) & (eps_data.index <= end_date)]
         eps_data = eps_data.sort_index()
@@ -285,18 +319,12 @@ for ticker, data in stock_data.items():
     hist = data["history"]
     if hist.empty:
         continue
-    eps_data = None
-    ed = data["earnings_dates"]
-    if ed is not None and not ed.empty and "Reported EPS" in ed.columns:
-        eps_data = ed["Reported EPS"].dropna().sort_index()
-        eps_data.index = eps_data.index.tz_localize(None) if eps_data.index.tz is None else eps_data.index.tz_convert(None)
-    if eps_data is None or eps_data.empty:
-        qi = data["quarterly_income_stmt"]
-        if qi is not None and not qi.empty and "Diluted EPS" in qi.index:
-            eps_data = qi.loc["Diluted EPS"].dropna().sort_index()
+    eps_data, is_quarterly = build_eps_series(data)
     if eps_data is not None and not eps_data.empty:
         eps_data = eps_data.sort_index()
-        ttm_eps = eps_data.rolling(4).sum().dropna()
+        # Quarterly EPS must be summed over 4 quarters for a TTM figure; annual
+        # EPS is already a 12-month figure and is used as-is.
+        ttm_eps = eps_data.rolling(4).sum().dropna() if is_quarterly else eps_data
         if len(ttm_eps) < 1:
             continue
         hist_dates = hist.index.tz_localize(None) if hist.index.tz else hist.index
