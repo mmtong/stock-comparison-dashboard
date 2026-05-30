@@ -625,7 +625,7 @@ else:
     st.info("None of the selected stocks currently pay dividends.")
 
 # --- Single-Company Deep Dive: Price + P/E + EPS (stacked panels) ---
-st.header("Single-Company Deep Dive")
+st.header("Drivers of Stock Price (EPS x P/E)")
 st.caption("Price, P/E, and EPS for one company over its own selected period.")
 
 dd_col_input, dd_col_range = st.columns([3, 1])
