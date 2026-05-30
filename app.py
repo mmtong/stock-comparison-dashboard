@@ -626,18 +626,31 @@ else:
 
 # --- Single-Company Deep Dive: Price + P/E + EPS (stacked panels) ---
 st.header("Single-Company Deep Dive")
-st.caption(f"Price, P/E, and EPS for one company over the selected period ({time_range}).")
+st.caption("Price, P/E, and EPS for one company over its own selected period.")
 
-deep_ticker_input = st.text_input(
-    "Enter one ticker for the combined view",
-    value=tickers[0] if tickers else "COST",
-    key="deep_dive_ticker",
-).strip().upper()
+dd_col_input, dd_col_range = st.columns([3, 1])
+with dd_col_input:
+    deep_ticker_input = st.text_input(
+        "Enter one ticker for the combined view",
+        value=tickers[0] if tickers else "COST",
+        key="deep_dive_ticker",
+    ).strip().upper()
+with dd_col_range:
+    dd_time_range = st.selectbox(
+        "Time range",
+        ["1M", "3M", "6M", "1Y", "2Y", "5Y", "10Y"],
+        index=5,
+        key="deep_dive_range",
+    )
+
+dd_end_date = datetime.today()
+dd_start_date = dd_end_date - timedelta(days=range_map[dd_time_range])
+dd_x_range = [dd_start_date, dd_end_date]
 
 if deep_ticker_input:
     try:
         dd_hist, dd_info, dd_fin, dd_qfin, dd_qis, dd_is, dd_ed, dd_bs = fetch_stock_data(
-            deep_ticker_input, start_date, end_date
+            deep_ticker_input, dd_start_date, dd_end_date
         )
     except Exception as e:
         dd_hist = None
@@ -685,7 +698,7 @@ if deep_ticker_input:
                     row=2, col=1,
                 )
 
-            eps_windowed = eps_series[(eps_series.index >= start_date) & (eps_series.index <= end_date)]
+            eps_windowed = eps_series[(eps_series.index >= dd_start_date) & (eps_series.index <= dd_end_date)]
             fig_dd.add_trace(
                 go.Bar(x=eps_windowed.index, y=eps_windowed.values,
                        name="EPS", marker_color="#2ca02c"),
@@ -699,8 +712,8 @@ if deep_ticker_input:
             showlegend=False,
             margin=dict(t=40),
         )
-        # Lock every panel's x-axis to the same selected window.
-        fig_dd.update_xaxes(range=shared_x_range, type="date")
+        # Lock every panel's x-axis to this section's own selected window.
+        fig_dd.update_xaxes(range=dd_x_range, type="date")
         fig_dd.update_xaxes(title_text="Date", row=3, col=1)
         st.plotly_chart(fig_dd, use_container_width=True)
         st.caption(f"{deep_ticker_input} — EPS source: {source_label}")
