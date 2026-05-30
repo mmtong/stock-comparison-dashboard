@@ -5,12 +5,46 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import pandas as pd
 import requests
-from datetime import datetime, timedelta
+import os
+import json
+from datetime import datetime, timedelta, timezone
+
+AV_DAILY_LIMIT = 25  # Alpha Vantage free tier: 25 requests/day (resets at UTC midnight)
+AV_USAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".av_usage.json")
+
+
+def _av_today():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def get_av_calls_used():
+    """Return count of Alpha Vantage calls this app made today (UTC).
+    Tracked locally since Alpha Vantage doesn't expose remaining quota."""
+    try:
+        with open(AV_USAGE_FILE) as f:
+            rec = json.load(f)
+        return rec.get("count", 0) if rec.get("date") == _av_today() else 0
+    except Exception:
+        return 0
+
+
+def record_av_call():
+    """Increment today's Alpha Vantage call counter (resets on a new UTC day)."""
+    today = _av_today()
+    count = get_av_calls_used()
+    try:
+        with open(AV_USAGE_FILE, "w") as f:
+            json.dump({"date": today, "count": count + 1}, f)
+    except Exception:
+        pass
 
 st.set_page_config(page_title="Stock Dashboard", layout="wide")
 
 st.title("Stock Dashboard")
 st.caption(f"Data as of {datetime.today().strftime('%B %d, %Y')}")
+# Placeholder filled at the end of the run so it reflects all API calls made
+# during this render (Streamlit renders top-to-bottom).
+av_usage_placeholder = st.empty()
 
 col_input, col_range = st.columns([3, 1])
 
@@ -68,6 +102,9 @@ def fetch_av_eps(ticker):
             f"https://www.alphavantage.co/query?function=EARNINGS"
             f"&symbol={ticker}&apikey={ALPHAVANTAGE_API_KEY}"
         )
+        # This body only runs on a cache miss (i.e. a real network call), so
+        # incrementing here counts genuine API usage against the daily quota.
+        record_av_call()
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()
@@ -747,3 +784,13 @@ if deep_ticker_input:
         st.warning(f"No data found for {deep_ticker_input}.")
 
 st.caption("Data provided by Yahoo Finance via yfinance. Metrics may be delayed or unavailable for some tickers.")
+
+# Fill the API-usage indicator now that all Alpha Vantage calls for this run
+# have happened. This is an estimate based on calls THIS app made today (UTC);
+# Alpha Vantage doesn't expose true remaining quota, and the counter resets on
+# app restart/redeploy.
+_av_used = get_av_calls_used()
+_av_left = max(0, AV_DAILY_LIMIT - _av_used)
+av_usage_placeholder.caption(
+    f"Alpha Vantage free API calls today (est.): {_av_used} / {AV_DAILY_LIMIT} used · {_av_left} left"
+)
