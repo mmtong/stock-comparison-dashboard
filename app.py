@@ -699,9 +699,24 @@ if deep_ticker_input:
                 )
 
             eps_windowed = eps_series[(eps_series.index >= dd_start_date) & (eps_series.index <= dd_end_date)]
+            dd_vals = eps_windowed.values
+            dd_labels = [""]
+            for i in range(1, len(dd_vals)):
+                prev, curr = dd_vals[i - 1], dd_vals[i]
+                if prev == 0:
+                    dd_labels.append("N/A")
+                elif prev < 0 and curr < 0:
+                    dd_labels.append(f"{(abs(prev) - abs(curr)) / abs(prev) * 100:+.1f}%")
+                elif prev < 0 and curr >= 0:
+                    dd_labels.append("Turned +")
+                elif prev > 0 and curr < 0:
+                    dd_labels.append("Turned -")
+                else:
+                    dd_labels.append(f"{(curr / prev - 1) * 100:+.1f}%")
             fig_dd.add_trace(
                 go.Bar(x=eps_windowed.index, y=eps_windowed.values,
-                       name="EPS", marker_color="#2ca02c"),
+                       name="EPS", marker_color="#2ca02c",
+                       text=dd_labels, textposition="outside", cliponaxis=False),
                 row=3, col=1,
             )
 
