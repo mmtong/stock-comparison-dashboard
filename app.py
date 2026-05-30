@@ -41,6 +41,10 @@ if not tickers:
 end_date = datetime.today()
 start_date = end_date - timedelta(days=range_map[time_range])
 
+# Shared x-axis window used by Stock Price History, EPS Over Time, and P/E Over Time.
+# All three charts MUST lock to this range so they share the same time period and scale.
+shared_x_range = [start_date, end_date]
+
 
 @st.cache_data(ttl=300)
 def fetch_stock_data(ticker, start, end):
@@ -195,16 +199,17 @@ fig_price = go.Figure()
 for ticker, data in stock_data.items():
     hist = data["history"]
     if len(hist) > 0:
+        x_dates = hist.index.tz_localize(None) if hist.index.tz else hist.index
         pct_change = (hist["Close"].iloc[-1] / hist["Close"].iloc[0] - 1) * 100
         label = f"{ticker} ({pct_change:+.1f}%)"
         if normalize:
             values = (hist["Close"] / hist["Close"].iloc[0] - 1) * 100
             fig_price.add_trace(go.Scatter(
-                x=hist.index, y=values, mode="lines", name=label,
+                x=x_dates, y=values, mode="lines", name=label,
             ))
         else:
             fig_price.add_trace(go.Scatter(
-                x=hist.index, y=hist["Close"], mode="lines", name=label,
+                x=x_dates, y=hist["Close"], mode="lines", name=label,
             ))
 
 fig_price.update_layout(
@@ -213,6 +218,7 @@ fig_price.update_layout(
     hovermode="x unified",
     height=500,
     template="plotly_white",
+    xaxis=dict(range=shared_x_range, type="date"),
 )
 st.plotly_chart(fig_price, use_container_width=True)
 
@@ -250,7 +256,7 @@ for ticker, data in stock_data.items():
                 pct = (curr / prev - 1) * 100
                 labels.append(f"{pct:+.1f}%")
         fig_eps.add_trace(go.Bar(
-            x=eps_data.index.strftime("%Y-%m"),
+            x=eps_data.index,
             y=eps_data.values,
             name=ticker,
             text=labels,
@@ -259,12 +265,13 @@ for ticker, data in stock_data.items():
 
 fig_eps.update_layout(
     yaxis_title="EPS ($)",
-    xaxis_title="Quarter",
+    xaxis_title="Date",
     barmode="group",
     height=400,
     template="plotly_white",
     margin=dict(t=40),
     yaxis=dict(autorange=True, rangemode="tozero"),
+    xaxis=dict(range=shared_x_range, type="date"),
 )
 fig_eps.update_yaxes(automargin=True, ticksuffix="  ")
 fig_eps.update_traces(cliponaxis=False)
@@ -311,6 +318,7 @@ fig_pe.update_layout(
     hovermode="x unified",
     height=400,
     template="plotly_white",
+    xaxis=dict(range=shared_x_range, type="date"),
 )
 st.plotly_chart(fig_pe, use_container_width=True)
 
