@@ -47,34 +47,40 @@ start_date = end_date - timedelta(days=range_map[time_range])
 shared_x_range = [start_date, end_date]
 
 
-# Load FMP API key from Streamlit secrets (set in .streamlit/secrets.toml locally
-# and in the Streamlit Cloud dashboard under App Settings > Secrets).
-FMP_API_KEY = st.secrets.get("FMP_API_KEY", "")
+# Load Alpha Vantage API key from Streamlit secrets (set in .streamlit/secrets.toml
+# locally and in the Streamlit Cloud dashboard under App Settings > Secrets).
+ALPHAVANTAGE_API_KEY = st.secrets.get("ALPHAVANTAGE_API_KEY", "")
 
 
 @st.cache_data(ttl=300)
-def fetch_fmp_eps(ticker):
-    """Fetch full quarterly EPS history from Financial Modeling Prep.
-    Returns a tz-naive DatetimeIndex Series or None on failure."""
-    if not FMP_API_KEY or FMP_API_KEY == "your_fmp_api_key_here":
+def fetch_av_eps(ticker):
+    """Fetch full quarterly reported-EPS history from Alpha Vantage.
+    Returns a tz-naive DatetimeIndex Series or None on failure.
+
+    Free tier is 25 calls/day; we make one call per ticker (cached 5 min).
+    A rate-limit/usage notice returns no 'quarterlyEarnings' key, so we
+    return None and the caller falls back to yfinance sources."""
+    if not ALPHAVANTAGE_API_KEY or ALPHAVANTAGE_API_KEY == "your_alphavantage_api_key_here":
         return None
     try:
         url = (
-            f"https://financialmodelingprep.com/api/v3/historical/earning_calendar/"
-            f"{ticker}?apikey={FMP_API_KEY}"
+            f"https://www.alphavantage.co/query?function=EARNINGS"
+            f"&symbol={ticker}&apikey={ALPHAVANTAGE_API_KEY}"
         )
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
-        records = resp.json()
-        if not records:
+        data = resp.json()
+        quarters = data.get("quarterlyEarnings")
+        if not quarters:
             return None
-        df = pd.DataFrame(records)
-        df = df[df["eps"].notna()]
+        df = pd.DataFrame(quarters)
+        df["reportedEPS"] = pd.to_numeric(df["reportedEPS"], errors="coerce")
+        df = df[df["reportedEPS"].notna()]
         if df.empty:
             return None
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.set_index("date").sort_index()
-        return df["eps"].rename(ticker)
+        df["fiscalDateEnding"] = pd.to_datetime(df["fiscalDateEnding"])
+        df = df.set_index("fiscalDateEnding").sort_index()
+        return df["reportedEPS"].rename(ticker)
     except Exception:
         return None
 
@@ -108,17 +114,17 @@ def build_eps_series(data):
     """Return (eps_series, is_quarterly) using the longest reliable source.
 
     Priority:
-      1. FMP API   - long quarterly history (30+ yrs), works on Cloud. Requires
-                     FMP_API_KEY in Streamlit secrets.
+      1. Alpha Vantage - long quarterly history (20+ yrs), works on Cloud.
+                     Requires ALPHAVANTAGE_API_KEY in Streamlit secrets.
       2. yfinance get_earnings_dates - long quarterly history but often blocked
                      from datacenter IPs (Streamlit Cloud).
       3. income_stmt (annual) - ~4 yrs, reliable fallback on Cloud.
                      Already a 12-month figure — must NOT be re-rolled for TTM.
       4. quarterly_income_stmt - only ~5 recent quarters, last resort."""
-    # 1. FMP
-    fmp = data.get("fmp_eps")
-    if fmp is not None and not fmp.empty:
-        return fmp, True
+    # 1. Alpha Vantage
+    av = data.get("av_eps")
+    if av is not None and not av.empty:
+        return av, True
 
     # 2. yfinance get_earnings_dates
     ed = data["earnings_dates"]
@@ -164,7 +170,7 @@ with st.spinner("Fetching stock data..."):
                 "quarterly_income_stmt": quarterly_income_stmt,
                 "income_stmt": income_stmt,
                 "earnings_dates": earnings_dates,
-                "fmp_eps": fetch_fmp_eps(ticker),
+                "av_eps": fetch_av_eps(ticker),
                 "balance_sheet": balance_sheet,
             }
         except Exception as e:
