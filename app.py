@@ -307,6 +307,7 @@ for ticker, data in stock_data.items():
         "P/E Ratio": info.get("trailingPE"),
         "Forward P/E": info.get("forwardPE"),
         "EPS (TTM)": info.get("trailingEps"),
+        "Forward EPS *": info.get("forwardEps"),
         "Earnings Growth (YoY)": earnings_growth,
         "Revenue (TTM)": info.get("totalRevenue"),
         "Revenue Growth (YoY)": rev_growth,
@@ -349,6 +350,7 @@ display_df["Revenue (TTM)"] = display_df["Revenue (TTM)"].apply(fmt_large_number
 display_df["P/E Ratio"] = display_df["P/E Ratio"].apply(lambda x: fmt_number(x, decimals=1))
 display_df["Forward P/E"] = display_df["Forward P/E"].apply(lambda x: fmt_number(x, decimals=1))
 display_df["EPS (TTM)"] = display_df["EPS (TTM)"].apply(lambda x: fmt_number(x, prefix="$"))
+display_df["Forward EPS *"] = display_df["Forward EPS *"].apply(lambda x: fmt_number(x, prefix="$"))
 display_df["Earnings Growth (YoY)"] = display_df["Earnings Growth (YoY)"].apply(fmt_pct)
 display_df["Revenue Growth (YoY)"] = display_df["Revenue Growth (YoY)"].apply(fmt_pct)
 display_df["Profit Margin"] = display_df["Profit Margin"].apply(fmt_pct)
@@ -380,8 +382,9 @@ for ticker, data in stock_data.items():
     n = data["info"].get("numberOfAnalystOpinions")
     analyst_parts.append(f"{ticker}: {n} analysts" if n else f"{ticker}: count N/A")
 st.caption(
-    "\\* Forward P/E = current price ÷ analyst consensus forward EPS estimate "
-    "(Yahoo Finance). Based on " + "; ".join(analyst_parts) + "."
+    "\\* Forward EPS is the analyst consensus forward EPS estimate (Yahoo Finance); "
+    "Forward P/E = current price ÷ Forward EPS. Based on "
+    + "; ".join(analyst_parts) + "."
 )
 
 # --- Price Chart ---
