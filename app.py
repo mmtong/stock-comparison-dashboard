@@ -167,9 +167,46 @@ start_date = end_date - timedelta(days=range_map[time_range])
 shared_x_range = [start_date, end_date]
 
 
-# Load Alpha Vantage API key from Streamlit secrets (set in .streamlit/secrets.toml
-# locally and in the Streamlit Cloud dashboard under App Settings > Secrets).
+# API keys from Streamlit secrets (set in .streamlit/secrets.toml locally and in
+# the Streamlit Cloud dashboard under App Settings > Secrets).
 ALPHAVANTAGE_API_KEY = st.secrets.get("ALPHAVANTAGE_API_KEY", "")
+TWELVEDATA_API_KEY = st.secrets.get("TWELVEDATA_API_KEY", "")
+
+
+@st.cache_data(ttl=600)
+def fetch_price_history(ticker, start, end):
+    """Daily price history. Twelve Data is primary (key-based, 800 calls/day,
+    not IP-throttled like Yahoo); falls back to yfinance if no key or on error.
+    Returns a DataFrame with a tz-naive DatetimeIndex and Close/Volume columns."""
+    if TWELVEDATA_API_KEY and TWELVEDATA_API_KEY != "your_twelvedata_api_key_here":
+        try:
+            resp = requests.get(
+                "https://api.twelvedata.com/time_series",
+                params={
+                    "symbol": ticker,
+                    "interval": "1day",
+                    "outputsize": 5000,
+                    "start_date": start.strftime("%Y-%m-%d"),
+                    "end_date": end.strftime("%Y-%m-%d"),
+                    "apikey": TWELVEDATA_API_KEY,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") == "ok" and data.get("values"):
+                df = pd.DataFrame(data["values"])
+                df["datetime"] = pd.to_datetime(df["datetime"])
+                df = df.set_index("datetime").sort_index()
+                df["Close"] = pd.to_numeric(df["close"], errors="coerce")
+                df["Volume"] = pd.to_numeric(df.get("volume"), errors="coerce")
+                df = df.dropna(subset=["Close"])
+                if not df.empty:
+                    return df[["Close", "Volume"]]
+        except Exception:
+            pass
+    # Fallback: yfinance (subject to Yahoo rate limits on shared cloud IPs).
+    return yf.Ticker(ticker).history(start=start, end=end)
 
 
 @st.cache_data(ttl=300)
@@ -227,10 +264,9 @@ def fetch_stock_data(ticker, start, end):
     for attempt in range(3):
         try:
             stock = yf.Ticker(ticker)
-            hist = stock.history(start=start, end=end)
-            if hist.empty:
-                # yfinance sometimes returns empty (rather than raising) when
-                # throttled; treat as retryable.
+            hist = fetch_price_history(ticker, start, end)
+            if hist is None or hist.empty:
+                # Price unavailable (e.g. both sources throttled); retryable.
                 raise RuntimeError("Too Many Requests (empty history)")
             info = stock.info
             financials = stock.financials
