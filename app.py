@@ -1061,6 +1061,22 @@ if deep_ticker_input:
                 row=3, col=1,
             )
 
+            # Trailing 12-month (4-quarter) rolling average over the quarterly EPS
+            # bars. Computed on the full series so the line has proper trailing
+            # context at the window's left edge, then sliced to the display window.
+            if is_quarterly:
+                eps_roll = eps_series.rolling(4).mean()
+                eps_roll = eps_roll[
+                    (eps_roll.index >= dd_start_date) & (eps_roll.index <= dd_end_date)
+                ].dropna()
+                if not eps_roll.empty:
+                    fig_dd.add_trace(
+                        go.Scatter(x=eps_roll.index, y=eps_roll.values, mode="lines",
+                                   name="12-mo avg EPS",
+                                   line=dict(color="#d62728", width=2.5)),
+                        row=3, col=1,
+                    )
+
         fig_dd.update_layout(
             height=750,
             template="plotly_white",
@@ -1072,6 +1088,11 @@ if deep_ticker_input:
         fig_dd.update_xaxes(range=dd_x_range, type="date")
         fig_dd.update_xaxes(title_text="Date", row=3, col=1)
         st.plotly_chart(fig_dd, use_container_width=True)
+        if eps_series is not None and not eps_series.empty and is_quarterly:
+            st.caption(
+                "The red line on the EPS panel is the trailing 12-month "
+                "(4-quarter) rolling average."
+            )
         st.caption(
             f"{ticker_label(deep_ticker_input, dd_info)} — EPS source: {source_label} · "
             f"P/E smoothed with a {pe_smooth_window(dd_time_range)}-trading-day rolling average."
