@@ -924,7 +924,15 @@ if deep_ticker_input:
     elif dd_hist is not None:
         st.warning(f"No data found for {deep_ticker_input}.")
 
-st.caption("Data provided by Yahoo Finance via yfinance. Metrics may be delayed or unavailable for some tickers.")
+st.divider()
+st.caption(
+    "**Data sources:** "
+    "Price history — Twelve Data (yfinance fallback) · "
+    "Quarterly EPS — Alpha Vantage · "
+    "Fundamentals (income statement, balance sheet, ratios) — Yahoo Finance via yfinance · "
+    "Company search — Yahoo Finance. "
+    "Metrics may be delayed or unavailable for some tickers."
+)
 
 # Fill the API-usage indicator now that all Alpha Vantage calls for this run
 # have happened. This is an estimate based on calls THIS app made today (UTC);
