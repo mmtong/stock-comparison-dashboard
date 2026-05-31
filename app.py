@@ -7,7 +7,6 @@ import pandas as pd
 import requests
 import os
 import json
-import time
 from datetime import datetime, timedelta, timezone
 from streamlit_searchbox import st_searchbox
 
@@ -250,42 +249,38 @@ def fetch_av_eps(ticker):
         return None, f"request failed: {e}"
 
 
-def _is_rate_limited(err):
-    msg = str(err).lower()
-    return "too many requests" in msg or "rate limit" in msg or "429" in msg
-
-
 @st.cache_data(ttl=600)
-def fetch_stock_data(ticker, start, end):
-    """Fetch all yfinance data for one ticker. Yahoo throttles bursts from shared
-    cloud IPs, so we keep the number of endpoint calls minimal and retry the whole
-    fetch with exponential backoff when rate-limited."""
-    last_err = None
-    for attempt in range(3):
+def fetch_fundamentals(ticker):
+    """Fetch yfinance fundamentals for one ticker. NEVER raises.
+
+    Yahoo throttles bursts from shared cloud IPs, so each field is fetched
+    independently and any throttled/missing piece returns None/empty instead of
+    aborting the whole dashboard. Price history is fetched separately (Twelve
+    Data), so the price/P/E/EPS charts keep working even when this is throttled."""
+    out = {
+        "info": {}, "financials": None, "quarterly_financials": None,
+        "income_stmt": None, "earnings_dates": None, "balance_sheet": None,
+    }
+    try:
+        stock = yf.Ticker(ticker)
+    except Exception:
+        return out
+    getters = {
+        "info": lambda: stock.info,
+        "financials": lambda: stock.financials,
+        "quarterly_financials": lambda: stock.quarterly_financials,
+        "income_stmt": lambda: stock.income_stmt,
+        "balance_sheet": lambda: stock.balance_sheet,
+        "earnings_dates": lambda: stock.get_earnings_dates(limit=60),
+    }
+    for key, fn in getters.items():
         try:
-            stock = yf.Ticker(ticker)
-            hist = fetch_price_history(ticker, start, end)
-            if hist is None or hist.empty:
-                # Price unavailable (e.g. both sources throttled); retryable.
-                raise RuntimeError("Too Many Requests (empty history)")
-            info = stock.info
-            financials = stock.financials
-            quarterly_financials = stock.quarterly_financials
-            income_stmt = stock.income_stmt
-            # Secondary quarterly-EPS source (Alpha Vantage is primary). A single
-            # attempt only — this endpoint is flaky and not worth extra calls.
-            try:
-                ed = stock.get_earnings_dates(limit=60)
-                earnings_dates = ed if (ed is not None and not ed.empty) else None
-            except Exception:
-                earnings_dates = None
-            balance_sheet = stock.balance_sheet
-            return hist, info, financials, quarterly_financials, income_stmt, earnings_dates, balance_sheet
-        except Exception as e:
-            last_err = e
-            if attempt < 2:
-                time.sleep(1.5 * (attempt + 1))  # 1.5s, then 3s
-    raise last_err
+            val = fn()
+            if val is not None and not (hasattr(val, "empty") and val.empty):
+                out[key] = val
+        except Exception:
+            pass
+    return out
 
 
 def build_eps_series(data):
@@ -324,35 +319,37 @@ def build_eps_series(data):
 with st.spinner("Fetching stock data..."):
     stock_data = {}
     failed = []
+    degraded = []  # price loaded, but yfinance fundamentals throttled/unavailable
     for ticker in tickers:
-        try:
-            hist, info, financials, quarterly_financials, income_stmt, earnings_dates, balance_sheet = fetch_stock_data(
-                ticker, start_date, end_date
-            )
-            if hist.empty:
-                failed.append(ticker)
-                continue
-            stock_data[ticker] = {
-                "history": hist,
-                "info": info,
-                "financials": financials,
-                "quarterly_financials": quarterly_financials,
-                "income_stmt": income_stmt,
-                "earnings_dates": earnings_dates,
-                "balance_sheet": balance_sheet,
-            }
-            av_series, av_status = fetch_av_eps(ticker)
-            stock_data[ticker]["av_eps"] = av_series
-            stock_data[ticker]["av_status"] = av_status
-        except Exception as e:
-            failed.append(f"{ticker} ({e})")
+        hist = fetch_price_history(ticker, start_date, end_date)
+        if hist is None or hist.empty:
+            failed.append(ticker)
+            continue
+        fund = fetch_fundamentals(ticker)
+        if not fund.get("info"):
+            degraded.append(ticker)
+        stock_data[ticker] = {"history": hist, **fund}
+        av_series, av_status = fetch_av_eps(ticker)
+        stock_data[ticker]["av_eps"] = av_series
+        stock_data[ticker]["av_status"] = av_status
 
 if failed:
-    st.error(f"Could not fetch data for: {', '.join(failed)}")
+    st.error(
+        "Could not fetch price data for: " + ", ".join(failed)
+        + ". This is usually a temporary rate limit — wait a minute and refresh."
+    )
 
 if not stock_data:
     st.warning("No valid stock data found. Check your ticker symbols.")
     st.stop()
+
+if degraded:
+    st.warning(
+        "Fundamentals (Key Fundamentals table, revenue, net income, debt, dividends) "
+        "are temporarily unavailable for: " + ", ".join(degraded)
+        + " — Yahoo Finance is rate-limiting. Price, P/E, and EPS charts still work. "
+        "Refresh in a minute to load the rest."
+    )
 
 
 def ticker_label(ticker, info=None):
@@ -832,19 +829,15 @@ dd_start_date = dd_end_date - timedelta(days=range_map[dd_time_range])
 dd_x_range = [dd_start_date, dd_end_date]
 
 if deep_ticker_input:
-    try:
-        dd_hist, dd_info, dd_fin, dd_qfin, dd_is, dd_ed, dd_bs = fetch_stock_data(
-            deep_ticker_input, dd_start_date, dd_end_date
-        )
-    except Exception as e:
-        dd_hist = None
-        st.error(f"Could not fetch data for {deep_ticker_input}: {e}")
+    dd_hist = fetch_price_history(deep_ticker_input, dd_start_date, dd_end_date)
 
     if dd_hist is not None and not dd_hist.empty:
+        dd_fund = fetch_fundamentals(deep_ticker_input)
+        dd_info = dd_fund["info"]
         dd_av_series, _ = fetch_av_eps(deep_ticker_input)
         dd_data = {
-            "earnings_dates": dd_ed,
-            "income_stmt": dd_is,
+            "earnings_dates": dd_fund["earnings_dates"],
+            "income_stmt": dd_fund["income_stmt"],
             "av_eps": dd_av_series,
         }
         eps_series, is_quarterly, source_label = build_eps_series(dd_data)
@@ -921,8 +914,11 @@ if deep_ticker_input:
             f"{ticker_label(deep_ticker_input, dd_info)} — EPS source: {source_label} · "
             f"P/E smoothed with a {pe_smooth_window(dd_time_range)}-trading-day rolling average."
         )
-    elif dd_hist is not None:
-        st.warning(f"No data found for {deep_ticker_input}.")
+    else:
+        st.warning(
+            f"No price data for {deep_ticker_input} — possibly a temporary rate "
+            "limit or an unrecognized ticker. Try again shortly."
+        )
 
 st.divider()
 st.caption(
