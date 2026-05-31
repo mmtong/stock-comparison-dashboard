@@ -1070,16 +1070,25 @@ if deep_ticker_input:
                     (eps_roll.index >= dd_start_date) & (eps_roll.index <= dd_end_date)
                 ].dropna()
                 if not eps_roll.empty:
-                    # Period-over-period growth of the 12-month average itself,
-                    # labelled on each point (first point blank, no prior).
-                    roll_growth = growth_labels(list(eps_roll.values))
                     fig_dd.add_trace(
                         go.Scatter(x=eps_roll.index, y=eps_roll.values,
-                                   mode="lines+text",
+                                   mode="lines",
                                    name="12-mo avg EPS",
                                    line=dict(color="#d62728", width=2.5),
-                                   text=roll_growth, textposition="bottom center",
+                                   cliponaxis=False),
+                        row=3, col=1,
+                    )
+                    # Period-over-period growth of the 12-month average itself,
+                    # placed in a row just below the zero baseline so the labels
+                    # stay clear of the bars and the line (first point blank).
+                    roll_growth = growth_labels(list(eps_roll.values))
+                    label_y = -0.12 * float(max(eps_windowed.max(), eps_roll.max()))
+                    fig_dd.add_trace(
+                        go.Scatter(x=eps_roll.index, y=[label_y] * len(eps_roll),
+                                   mode="text", text=roll_growth,
+                                   textposition="middle center",
                                    textfont=dict(color="#d62728", size=9),
+                                   showlegend=False, hoverinfo="skip",
                                    cliponaxis=False),
                         row=3, col=1,
                     )
