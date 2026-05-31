@@ -8,6 +8,7 @@ import requests
 import os
 import json
 from datetime import datetime, timedelta, timezone
+from streamlit_searchbox import st_searchbox
 
 # Horizontal legend anchored below every chart's plotting area.
 BOTTOM_LEGEND = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title_text="")
@@ -84,13 +85,28 @@ st.caption(f"Data as of {datetime.today().strftime('%B %d, %Y')}")
 # during this render (Streamlit renders top-to-bottom).
 av_usage_placeholder = st.empty()
 
+if "cmp_tickers" not in st.session_state:
+    st.session_state.cmp_tickers = ["COST", "WMT"]
+
 col_input, col_range = st.columns([3, 1])
 
 with col_input:
-    tickers_input = st.text_input(
-        "Enter ticker symbols (comma-separated)",
-        value="COST, WMT",
-        placeholder="e.g. AAPL, MSFT, GOOGL",
+    picked = st_searchbox(
+        search_companies,
+        placeholder="Search a company name or ticker to add…",
+        label="Add companies to compare",
+        debounce=300,
+        key="cmp_search",
+    )
+    if picked:
+        picked = picked.upper()
+        if picked not in st.session_state.cmp_tickers:
+            st.session_state.cmp_tickers.append(picked)
+    # Editable/removable list of the selected tickers.
+    st.session_state.cmp_tickers = st.multiselect(
+        "Selected companies",
+        options=st.session_state.cmp_tickers,
+        default=st.session_state.cmp_tickers,
     )
 
 with col_range:
@@ -105,10 +121,10 @@ range_map = {
     "1Y": 365, "2Y": 730, "5Y": 1825, "10Y": 3650,
 }
 
-tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+tickers = [t.strip().upper() for t in st.session_state.cmp_tickers if t.strip()]
 
 if not tickers:
-    st.warning("Enter at least one ticker symbol above.")
+    st.warning("Search for and add at least one company above.")
     st.stop()
 
 end_date = datetime.today()
@@ -122,6 +138,35 @@ shared_x_range = [start_date, end_date]
 # Load Alpha Vantage API key from Streamlit secrets (set in .streamlit/secrets.toml
 # locally and in the Streamlit Cloud dashboard under App Settings > Secrets).
 ALPHAVANTAGE_API_KEY = st.secrets.get("ALPHAVANTAGE_API_KEY", "")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_companies(query):
+    """Type-ahead company/ticker search via Yahoo Finance's free search endpoint.
+    Returns a list of (label, ticker) tuples for st_searchbox. Cached per query."""
+    query = (query or "").strip()
+    if not query:
+        return []
+    try:
+        resp = requests.get(
+            "https://query2.finance.yahoo.com/v1/finance/search",
+            params={"q": query, "quotesCount": 10, "newsCount": 0},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        results = []
+        for q in resp.json().get("quotes", []):
+            symbol = q.get("symbol")
+            if not symbol or q.get("quoteType") != "EQUITY":
+                continue
+            name = q.get("shortname") or q.get("longname") or ""
+            exch = q.get("exchDisp") or ""
+            label = f"{name} ({symbol})" + (f" · {exch}" if exch else "")
+            results.append((label, symbol))
+        return results
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=300)
@@ -719,11 +764,17 @@ st.caption("Price, P/E, and EPS for one company over its own selected period.")
 
 dd_col_input, dd_col_range = st.columns([3, 1])
 with dd_col_input:
-    deep_ticker_input = st.text_input(
-        "Enter one ticker for the combined view",
-        value=tickers[0] if tickers else "COST",
-        key="deep_dive_ticker",
-    ).strip().upper()
+    dd_picked = st_searchbox(
+        search_companies,
+        placeholder="Search a company name or ticker…",
+        label="Company for the combined view",
+        debounce=300,
+        key="deep_dive_search",
+    )
+    if dd_picked:
+        st.session_state.dd_ticker = dd_picked.upper()
+    deep_ticker_input = st.session_state.get("dd_ticker", tickers[0] if tickers else "COST")
+    st.caption(f"Showing: **{deep_ticker_input}**")
 with dd_col_range:
     dd_time_range = st.selectbox(
         "Time range",
