@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import os
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from streamlit_searchbox import st_searchbox
 
@@ -212,29 +213,43 @@ def fetch_av_eps(ticker):
         return None, f"request failed: {e}"
 
 
-@st.cache_data(ttl=300)
+def _is_rate_limited(err):
+    msg = str(err).lower()
+    return "too many requests" in msg or "rate limit" in msg or "429" in msg
+
+
+@st.cache_data(ttl=600)
 def fetch_stock_data(ticker, start, end):
-    stock = yf.Ticker(ticker)
-    hist = stock.history(start=start, end=end)
-    info = stock.info
-    financials = stock.financials
-    quarterly_financials = stock.quarterly_financials
-    quarterly_income_stmt = stock.quarterly_income_stmt
-    income_stmt = stock.income_stmt
-    # get_earnings_dates is the only LONG quarterly EPS source (~10+ yrs) but its
-    # scraping endpoint is often blocked from datacenter IPs (e.g. Streamlit Cloud).
-    # Retry a couple times; if it still fails we fall back to annual income_stmt.
-    earnings_dates = None
-    for _ in range(3):
+    """Fetch all yfinance data for one ticker. Yahoo throttles bursts from shared
+    cloud IPs, so we keep the number of endpoint calls minimal and retry the whole
+    fetch with exponential backoff when rate-limited."""
+    last_err = None
+    for attempt in range(3):
         try:
-            ed = stock.get_earnings_dates(limit=60)
-            if ed is not None and not ed.empty:
-                earnings_dates = ed
-                break
-        except Exception:
-            pass
-    balance_sheet = stock.balance_sheet
-    return hist, info, financials, quarterly_financials, quarterly_income_stmt, income_stmt, earnings_dates, balance_sheet
+            stock = yf.Ticker(ticker)
+            hist = stock.history(start=start, end=end)
+            if hist.empty:
+                # yfinance sometimes returns empty (rather than raising) when
+                # throttled; treat as retryable.
+                raise RuntimeError("Too Many Requests (empty history)")
+            info = stock.info
+            financials = stock.financials
+            quarterly_financials = stock.quarterly_financials
+            income_stmt = stock.income_stmt
+            # Secondary quarterly-EPS source (Alpha Vantage is primary). A single
+            # attempt only — this endpoint is flaky and not worth extra calls.
+            try:
+                ed = stock.get_earnings_dates(limit=60)
+                earnings_dates = ed if (ed is not None and not ed.empty) else None
+            except Exception:
+                earnings_dates = None
+            balance_sheet = stock.balance_sheet
+            return hist, info, financials, quarterly_financials, income_stmt, earnings_dates, balance_sheet
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))  # 1.5s, then 3s
+    raise last_err
 
 
 def build_eps_series(data):
@@ -246,8 +261,7 @@ def build_eps_series(data):
       2. yfinance get_earnings_dates - long quarterly history but often blocked
                      from datacenter IPs (Streamlit Cloud).
       3. income_stmt (annual) - ~4 yrs, reliable fallback on Cloud.
-                     Already a 12-month figure — must NOT be re-rolled for TTM.
-      4. quarterly_income_stmt - only ~5 recent quarters, last resort."""
+                     Already a 12-month figure — must NOT be re-rolled for TTM."""
     # 1. Alpha Vantage
     av = data.get("av_eps")
     if av is not None and not av.empty:
@@ -268,13 +282,6 @@ def build_eps_series(data):
         if not s.empty:
             return s, False, "yfinance income statement (annual fallback)"
 
-    # 4. Short quarterly fallback
-    qi = data["quarterly_income_stmt"]
-    if qi is not None and not qi.empty and "Diluted EPS" in qi.index:
-        s = qi.loc["Diluted EPS"].dropna().sort_index()
-        if not s.empty:
-            return s, True, "yfinance quarterly income statement (5 quarters)"
-
     return None, True, "unavailable"
 
 
@@ -283,7 +290,7 @@ with st.spinner("Fetching stock data..."):
     failed = []
     for ticker in tickers:
         try:
-            hist, info, financials, quarterly_financials, quarterly_income_stmt, income_stmt, earnings_dates, balance_sheet = fetch_stock_data(
+            hist, info, financials, quarterly_financials, income_stmt, earnings_dates, balance_sheet = fetch_stock_data(
                 ticker, start_date, end_date
             )
             if hist.empty:
@@ -294,7 +301,6 @@ with st.spinner("Fetching stock data..."):
                 "info": info,
                 "financials": financials,
                 "quarterly_financials": quarterly_financials,
-                "quarterly_income_stmt": quarterly_income_stmt,
                 "income_stmt": income_stmt,
                 "earnings_dates": earnings_dates,
                 "balance_sheet": balance_sheet,
@@ -791,7 +797,7 @@ dd_x_range = [dd_start_date, dd_end_date]
 
 if deep_ticker_input:
     try:
-        dd_hist, dd_info, dd_fin, dd_qfin, dd_qis, dd_is, dd_ed, dd_bs = fetch_stock_data(
+        dd_hist, dd_info, dd_fin, dd_qfin, dd_is, dd_ed, dd_bs = fetch_stock_data(
             deep_ticker_input, dd_start_date, dd_end_date
         )
     except Exception as e:
@@ -803,7 +809,6 @@ if deep_ticker_input:
         dd_data = {
             "earnings_dates": dd_ed,
             "income_stmt": dd_is,
-            "quarterly_income_stmt": dd_qis,
             "av_eps": dd_av_series,
         }
         eps_series, is_quarterly, source_label = build_eps_series(dd_data)
