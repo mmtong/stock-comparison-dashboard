@@ -3,3 +3,5 @@ __pycache__/
 .DS_Store
 .streamlit/secrets.toml
 .av_usage.json
+
+.claude/launch.json

@@ -85,6 +85,37 @@ st.caption(f"Data as of {datetime.today().strftime('%B %d, %Y')}")
 # during this render (Streamlit renders top-to-bottom).
 av_usage_placeholder = st.empty()
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_companies(query):
+    """Type-ahead company/ticker search via Yahoo Finance's free search endpoint.
+    Returns a list of (label, ticker) tuples for st_searchbox. Cached per query.
+    Defined before its first use so module load never hits a NameError."""
+    query = (query or "").strip()
+    if not query:
+        return []
+    try:
+        resp = requests.get(
+            "https://query2.finance.yahoo.com/v1/finance/search",
+            params={"q": query, "quotesCount": 10, "newsCount": 0},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        results = []
+        for q in resp.json().get("quotes", []):
+            symbol = q.get("symbol")
+            if not symbol or q.get("quoteType") != "EQUITY":
+                continue
+            name = q.get("shortname") or q.get("longname") or ""
+            exch = q.get("exchDisp") or ""
+            label = f"{name} ({symbol})" + (f" · {exch}" if exch else "")
+            results.append((label, symbol))
+        return results
+    except Exception:
+        return []
+
+
 if "cmp_tickers" not in st.session_state:
     st.session_state.cmp_tickers = ["COST", "WMT"]
 
@@ -138,35 +169,6 @@ shared_x_range = [start_date, end_date]
 # Load Alpha Vantage API key from Streamlit secrets (set in .streamlit/secrets.toml
 # locally and in the Streamlit Cloud dashboard under App Settings > Secrets).
 ALPHAVANTAGE_API_KEY = st.secrets.get("ALPHAVANTAGE_API_KEY", "")
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def search_companies(query):
-    """Type-ahead company/ticker search via Yahoo Finance's free search endpoint.
-    Returns a list of (label, ticker) tuples for st_searchbox. Cached per query."""
-    query = (query or "").strip()
-    if not query:
-        return []
-    try:
-        resp = requests.get(
-            "https://query2.finance.yahoo.com/v1/finance/search",
-            params={"q": query, "quotesCount": 10, "newsCount": 0},
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=8,
-        )
-        resp.raise_for_status()
-        results = []
-        for q in resp.json().get("quotes", []):
-            symbol = q.get("symbol")
-            if not symbol or q.get("quoteType") != "EQUITY":
-                continue
-            name = q.get("shortname") or q.get("longname") or ""
-            exch = q.get("exchDisp") or ""
-            label = f"{name} ({symbol})" + (f" · {exch}" if exch else "")
-            results.append((label, symbol))
-        return results
-    except Exception:
-        return []
 
 
 @st.cache_data(ttl=300)
