@@ -118,7 +118,7 @@ def search_companies(query):
 
 
 if "cmp_tickers" not in st.session_state:
-    st.session_state.cmp_tickers = ["COST", "WMT"]
+    st.session_state.cmp_tickers = ["COST"]
 
 col_input, col_range = st.columns([3, 1])
 
