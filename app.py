@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import os
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from streamlit_searchbox import st_searchbox
 
@@ -249,37 +250,142 @@ def fetch_av_eps(ticker):
         return None, f"request failed: {e}"
 
 
+def _is_empty(val):
+    """True if a fetched value is missing/blank (None, empty DataFrame/Series,
+    empty dict/list). Used to decide whether a retry or fallback is needed."""
+    if val is None:
+        return True
+    if hasattr(val, "empty"):
+        return bool(val.empty)
+    return not val
+
+
+def _fetch_with_retry(fn, attempts=3, base_delay=0.6):
+    """Call fn() up to `attempts` times with exponential backoff, returning the
+    first non-empty result (or None). Yahoo's throttling is bursty, so a brief
+    retry often succeeds where the first call was rejected with a 429."""
+    for i in range(attempts):
+        try:
+            val = fn()
+            if not _is_empty(val):
+                return val
+        except Exception:
+            pass
+        if i < attempts - 1:
+            time.sleep(base_delay * (2 ** i))
+    return None
+
+
+@st.cache_data(ttl=1800)
+def fetch_av_overview(ticker):
+    """Fetch company fundamentals from Alpha Vantage's OVERVIEW endpoint and map
+    them onto yfinance-style `info` keys. Returns (info_dict_or_None, status).
+
+    Key-based and not subject to Yahoo's per-IP rate limiting, so this is the
+    fallback that keeps the Key Fundamentals table populated when Yahoo throttles
+    the shared cloud IP. Costs one Alpha Vantage call (25/day free tier), so it's
+    only invoked when yfinance `info` is unavailable."""
+    if not ALPHAVANTAGE_API_KEY or ALPHAVANTAGE_API_KEY == "your_alphavantage_api_key_here":
+        return None, "no API key configured"
+    try:
+        # Only runs on a cache miss (a real network call), so this counts genuine
+        # usage against the daily quota.
+        record_av_call()
+        resp = requests.get(
+            "https://www.alphavantage.co/query",
+            params={"function": "OVERVIEW", "symbol": ticker, "apikey": ALPHAVANTAGE_API_KEY},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data or "Symbol" not in data:
+            # Surface AV's own message (rate limit, premium notice, bad symbol).
+            note = data.get("Information") or data.get("Note") or data.get("Error Message")
+            return None, str(note)[:200] if note else "no overview data returned"
+
+        def num(*keys):
+            """First parseable float among the given AV fields, else None."""
+            for key in keys:
+                v = data.get(key)
+                if v in (None, "None", "", "-"):
+                    continue
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    continue
+            return None
+
+        name = data.get("Name") or None
+        info = {
+            "shortName": name,
+            "longName": name,
+            "marketCap": num("MarketCapitalization"),
+            "trailingPE": num("TrailingPE", "PERatio"),
+            "forwardPE": num("ForwardPE"),
+            "trailingEps": num("DilutedEPSTTM", "EPS"),
+            "totalRevenue": num("RevenueTTM"),
+            "profitMargins": num("ProfitMargin"),
+            "trailingAnnualDividendYield": num("DividendYield"),
+            "fiftyTwoWeekHigh": num("52WeekHigh"),
+            "fiftyTwoWeekLow": num("52WeekLow"),
+            # AV reports quarterly YoY growth; used as a fallback for the table's
+            # growth columns when annual income-statement data is unavailable.
+            "_av_revenue_growth_yoy": num("QuarterlyRevenueGrowthYOY"),
+            "_av_earnings_growth_yoy": num("QuarterlyEarningsGrowthYOY"),
+        }
+        return info, "ok"
+    except Exception as e:
+        return None, f"request failed: {e}"
+
+
 @st.cache_data(ttl=600)
 def fetch_fundamentals(ticker):
-    """Fetch yfinance fundamentals for one ticker. NEVER raises.
+    """Fetch fundamentals for one ticker. NEVER raises.
 
-    Yahoo throttles bursts from shared cloud IPs, so each field is fetched
-    independently and any throttled/missing piece returns None/empty instead of
-    aborting the whole dashboard. Price history is fetched separately (Twelve
-    Data), so the price/P/E/EPS charts keep working even when this is throttled."""
+    `info` drives the Key Fundamentals table, so it's fetched with a short
+    retry/backoff; if Yahoo is still throttling the shared cloud IP, the table
+    falls back to Alpha Vantage's OVERVIEW endpoint (key-based, not IP-throttled)
+    so it never goes fully blank. Statement-level data (financials, balance
+    sheet, earnings dates) is fetched once and left empty if throttled — those
+    feed secondary charts and have no free key-based equivalent. `info_source`
+    records where the table data came from."""
     out = {
         "info": {}, "financials": None, "quarterly_financials": None,
         "income_stmt": None, "earnings_dates": None, "balance_sheet": None,
+        "info_source": None,
     }
     try:
         stock = yf.Ticker(ticker)
     except Exception:
-        return out
-    getters = {
-        "info": lambda: stock.info,
-        "financials": lambda: stock.financials,
-        "quarterly_financials": lambda: stock.quarterly_financials,
-        "income_stmt": lambda: stock.income_stmt,
-        "balance_sheet": lambda: stock.balance_sheet,
-        "earnings_dates": lambda: stock.get_earnings_dates(limit=60),
-    }
-    for key, fn in getters.items():
-        try:
-            val = fn()
-            if val is not None and not (hasattr(val, "empty") and val.empty):
-                out[key] = val
-        except Exception:
-            pass
+        stock = None
+
+    if stock is not None:
+        info = _fetch_with_retry(lambda: stock.info)
+        if not _is_empty(info):
+            out["info"] = info
+            out["info_source"] = "Yahoo Finance"
+        getters = {
+            "financials": lambda: stock.financials,
+            "quarterly_financials": lambda: stock.quarterly_financials,
+            "income_stmt": lambda: stock.income_stmt,
+            "balance_sheet": lambda: stock.balance_sheet,
+            "earnings_dates": lambda: stock.get_earnings_dates(limit=60),
+        }
+        for key, fn in getters.items():
+            try:
+                val = fn()
+                if not _is_empty(val):
+                    out[key] = val
+            except Exception:
+                pass
+
+    # Fallback: source the Key Fundamentals table from Alpha Vantage when Yahoo's
+    # `info` is unavailable (the usual cause of an all-N/A table).
+    if _is_empty(out["info"]):
+        av_info, _ = fetch_av_overview(ticker)
+        if av_info:
+            out["info"] = av_info
+            out["info_source"] = "Alpha Vantage"
     return out
 
 
@@ -319,14 +425,29 @@ def build_eps_series(data):
 with st.spinner("Fetching stock data..."):
     stock_data = {}
     failed = []
-    degraded = []  # price loaded, but yfinance fundamentals throttled/unavailable
+    degraded = []          # statement-level charts throttled (revenue/net income/debt)
+    av_fundamentals = []   # Key Fundamentals table served via Alpha Vantage fallback
     for ticker in tickers:
         hist = fetch_price_history(ticker, start_date, end_date)
         if hist is None or hist.empty:
             failed.append(ticker)
             continue
         fund = fetch_fundamentals(ticker)
-        if not fund.get("info"):
+        info = dict(fund.get("info") or {})
+        if fund.get("info_source") == "Alpha Vantage":
+            av_fundamentals.append(ticker)
+            # AV's OVERVIEW omits current price and forward EPS — derive them from
+            # the Twelve Data price history we already have so those columns aren't
+            # blank. (forwardEps = price / forwardPE.)
+            last_close = float(hist["Close"].iloc[-1])
+            info.setdefault("currentPrice", last_close)
+            fpe = info.get("forwardPE")
+            if fpe and info.get("forwardEps") is None:
+                info["forwardEps"] = last_close / fpe
+        fund = {**fund, "info": info}
+        # Statement-level data feeds the revenue/net income/debt charts; if Yahoo
+        # throttled it, those degrade even when the table is served from AV.
+        if fund.get("financials") is None:
             degraded.append(ticker)
         stock_data[ticker] = {"history": hist, **fund}
         av_series, av_status = fetch_av_eps(ticker)
@@ -343,12 +464,19 @@ if not stock_data:
     st.warning("No valid stock data found. Check your ticker symbols.")
     st.stop()
 
+if av_fundamentals:
+    st.info(
+        "Key Fundamentals for " + ", ".join(av_fundamentals)
+        + " are served from Alpha Vantage because Yahoo Finance is rate-limiting "
+        "the shared cloud IP. The table values are current."
+    )
+
 if degraded:
     st.warning(
-        "Fundamentals (Key Fundamentals table, revenue, net income, debt, dividends) "
-        "are temporarily unavailable for: " + ", ".join(degraded)
-        + " — Yahoo Finance is rate-limiting. Price, P/E, and EPS charts still work. "
-        "Refresh in a minute to load the rest."
+        "Statement-level charts (revenue & net income history, debt-to-equity) "
+        "are temporarily limited for: " + ", ".join(degraded)
+        + " — Yahoo Finance is rate-limiting. Price, P/E, EPS, and the Key "
+        "Fundamentals table still work. Refresh in a minute to load the rest."
     )
 
 
@@ -385,6 +513,13 @@ for ticker, data in stock_data.items():
             ni_sorted = financials.loc["Net Income"].dropna().sort_index()
             if len(ni_sorted) >= 2 and ni_sorted.iloc[-2] != 0:
                 earnings_growth = (ni_sorted.iloc[-1] / ni_sorted.iloc[-2]) - 1
+
+    # Fall back to Alpha Vantage's quarterly YoY growth when annual income-
+    # statement data is throttled (keeps these columns from going N/A).
+    if rev_growth is None:
+        rev_growth = info.get("_av_revenue_growth_yoy")
+    if earnings_growth is None:
+        earnings_growth = info.get("_av_earnings_growth_yoy")
 
     metrics_rows.append({
         "Ticker": ticker,
@@ -925,7 +1060,8 @@ st.caption(
     "**Data sources:** "
     "Price history — Twelve Data (yfinance fallback) · "
     "Quarterly EPS — Alpha Vantage · "
-    "Fundamentals (income statement, balance sheet, ratios) — Yahoo Finance via yfinance · "
+    "Fundamentals (income statement, balance sheet, ratios) — Yahoo Finance via yfinance, "
+    "with Alpha Vantage (OVERVIEW) fallback for the Key Fundamentals table · "
     "Company search — Yahoo Finance. "
     "Metrics may be delayed or unavailable for some tickers."
 )
