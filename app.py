@@ -82,6 +82,10 @@ st.set_page_config(page_title="Stock Dashboard", layout="wide")
 
 st.title("Stock Dashboard")
 st.caption(f"Data as of {datetime.today().strftime('%B %d, %Y')}")
+st.caption(
+    "Charts show data for the last 5 years. The Stock Price History chart has its "
+    "own selector if you want a different range for that chart."
+)
 # Placeholder filled at the end of the run so it reflects all API calls made
 # during this render (Streamlit renders top-to-bottom).
 av_usage_placeholder = st.empty()
@@ -120,38 +124,33 @@ def search_companies(query):
 if "cmp_tickers" not in st.session_state:
     st.session_state.cmp_tickers = ["COST"]
 
-col_input, col_range = st.columns([3, 1])
-
-with col_input:
-    picked = st_searchbox(
-        search_companies,
-        placeholder="Search a company name or ticker to add…",
-        label="Add companies to compare",
-        debounce=300,
-        key="cmp_search",
-    )
-    if picked:
-        picked = picked.upper()
-        if picked not in st.session_state.cmp_tickers:
-            st.session_state.cmp_tickers.append(picked)
-    # Editable/removable list of the selected tickers.
-    st.session_state.cmp_tickers = st.multiselect(
-        "Selected companies",
-        options=st.session_state.cmp_tickers,
-        default=st.session_state.cmp_tickers,
-    )
-
-with col_range:
-    time_range = st.selectbox(
-        "Time range",
-        ["1M", "3M", "6M", "1Y", "2Y", "5Y", "10Y"],
-        index=5,
-    )
+picked = st_searchbox(
+    search_companies,
+    placeholder="Search a company name or ticker to add…",
+    label="Add companies to compare",
+    debounce=300,
+    key="cmp_search",
+)
+if picked:
+    picked = picked.upper()
+    if picked not in st.session_state.cmp_tickers:
+        st.session_state.cmp_tickers.append(picked)
+# Editable/removable list of the selected tickers.
+st.session_state.cmp_tickers = st.multiselect(
+    "Selected companies",
+    options=st.session_state.cmp_tickers,
+    default=st.session_state.cmp_tickers,
+)
 
 range_map = {
     "1M": 30, "3M": 90, "6M": 180,
     "1Y": 365, "2Y": 730, "5Y": 1825, "10Y": 3650,
 }
+RANGE_OPTIONS = ["1M", "3M", "6M", "1Y", "2Y", "5Y", "10Y"]
+
+# Every chart is pinned to a fixed 5-year window. Only the Stock Price History
+# chart has its own range selector (rendered alongside that chart below).
+time_range = "5Y"
 
 tickers = [t.strip().upper() for t in st.session_state.cmp_tickers if t.strip()]
 
@@ -165,6 +164,13 @@ start_date = end_date - timedelta(days=range_map[time_range])
 # Shared x-axis window used by Stock Price History, EPS Over Time, and P/E Over Time.
 # All three charts MUST lock to this range so they share the same time period and scale.
 shared_x_range = [start_date, end_date]
+
+# The Stock Price History chart can show a wider window than the shared 5Y range.
+# Read its selector's value (the widget is created further down) up front so the
+# single price-history fetch covers the widest range needed; switching within 5Y
+# then requires no refetch.
+price_range = st.session_state.get("price_range", "5Y")
+price_fetch_start = end_date - timedelta(days=max(range_map["5Y"], range_map[price_range]))
 
 
 # API keys from Streamlit secrets (set in .streamlit/secrets.toml locally and in
@@ -428,7 +434,7 @@ with st.spinner("Fetching stock data..."):
     degraded = []          # statement-level charts throttled (revenue/net income/debt)
     av_fundamentals = []   # Key Fundamentals table served via Alpha Vantage fallback
     for ticker in tickers:
-        hist = fetch_price_history(ticker, start_date, end_date)
+        hist = fetch_price_history(ticker, price_fetch_start, end_date)
         if hist is None or hist.empty:
             failed.append(ticker)
             continue
@@ -611,24 +617,45 @@ st.caption(
 # --- Price Chart ---
 st.header("Stock Price History")
 
-normalize = st.checkbox("Normalize prices (% change from start)", value=len(tickers) > 1)
+price_col_opts, price_col_range = st.columns([3, 1])
+with price_col_range:
+    # key="price_range" lets the fetch above size its window to this selection.
+    price_range = st.selectbox(
+        "Time range (this chart only)",
+        RANGE_OPTIONS,
+        index=RANGE_OPTIONS.index("5Y"),
+        key="price_range",
+    )
+with price_col_opts:
+    normalize = st.checkbox("Normalize prices (% change from start)", value=len(tickers) > 1)
+
+price_start_date = end_date - timedelta(days=range_map[price_range])
+price_x_range = [price_start_date, end_date]
 
 fig_price = go.Figure()
 for ticker, data in stock_data.items():
     hist = data["history"]
-    if len(hist) > 0:
-        x_dates = hist.index.tz_localize(None) if hist.index.tz else hist.index
-        pct_change = (hist["Close"].iloc[-1] / hist["Close"].iloc[0] - 1) * 100
-        label = f"{ticker_label(ticker)}: {pct_change:+.1f}%"
-        if normalize:
-            values = (hist["Close"] / hist["Close"].iloc[0] - 1) * 100
-            fig_price.add_trace(go.Scatter(
-                x=x_dates, y=values, mode="lines", name=label,
-            ))
-        else:
-            fig_price.add_trace(go.Scatter(
-                x=x_dates, y=hist["Close"], mode="lines", name=label,
-            ))
+    if hist is None or len(hist) == 0:
+        continue
+    # Slice to this chart's own window before computing % change, so "from start"
+    # is measured from the start of the selected range — not the full fetch.
+    idx = hist.index.tz_localize(None) if hist.index.tz is not None else hist.index
+    mask = idx >= price_start_date
+    x_dates = idx[mask]
+    closes = hist["Close"][mask]
+    if len(closes) == 0:
+        continue
+    pct_change = (closes.iloc[-1] / closes.iloc[0] - 1) * 100
+    label = f"{ticker_label(ticker)}: {pct_change:+.1f}%"
+    if normalize:
+        values = (closes / closes.iloc[0] - 1) * 100
+        fig_price.add_trace(go.Scatter(
+            x=x_dates, y=values, mode="lines", name=label,
+        ))
+    else:
+        fig_price.add_trace(go.Scatter(
+            x=x_dates, y=closes, mode="lines", name=label,
+        ))
 
 fig_price.update_layout(
     yaxis_title="% Change" if normalize else "Price (USD)",
@@ -636,7 +663,7 @@ fig_price.update_layout(
     hovermode="x unified",
     height=500,
     template="plotly_white",
-    xaxis=dict(range=shared_x_range, type="date"),
+    xaxis=dict(range=price_x_range, type="date"),
 )
 render_chart(fig_price)
 
