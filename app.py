@@ -1070,10 +1070,17 @@ if deep_ticker_input:
                     (eps_roll.index >= dd_start_date) & (eps_roll.index <= dd_end_date)
                 ].dropna()
                 if not eps_roll.empty:
+                    # Period-over-period growth of the 12-month average itself,
+                    # labelled on each point (first point blank, no prior).
+                    roll_growth = growth_labels(list(eps_roll.values))
                     fig_dd.add_trace(
-                        go.Scatter(x=eps_roll.index, y=eps_roll.values, mode="lines",
+                        go.Scatter(x=eps_roll.index, y=eps_roll.values,
+                                   mode="lines+text",
                                    name="12-mo avg EPS",
-                                   line=dict(color="#d62728", width=2.5)),
+                                   line=dict(color="#d62728", width=2.5),
+                                   text=roll_growth, textposition="bottom center",
+                                   textfont=dict(color="#d62728", size=9),
+                                   cliponaxis=False),
                         row=3, col=1,
                     )
 
@@ -1091,7 +1098,8 @@ if deep_ticker_input:
         if eps_series is not None and not eps_series.empty and is_quarterly:
             st.caption(
                 "The red line on the EPS panel is the trailing 12-month "
-                "(4-quarter) rolling average."
+                "(4-quarter) rolling average; red labels show its "
+                "period-over-period growth rate."
             )
         st.caption(
             f"{ticker_label(deep_ticker_input, dd_info)} — EPS source: {source_label} · "
