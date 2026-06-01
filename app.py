@@ -142,6 +142,13 @@ st.session_state.cmp_tickers = st.multiselect(
     default=st.session_state.cmp_tickers,
 )
 
+# Force a fresh pull from every provider — useful when a value shows as N/A due
+# to a transient rate limit and you don't want to wait for the cache to expire.
+if st.button("🔄 Refresh data", help="Clear cached data and re-fetch from the providers"):
+    st.session_state.pop("_fund_cache", None)
+    st.cache_data.clear()
+    st.rerun()
+
 range_map = {
     "1M": 30, "3M": 90, "6M": 180,
     "1Y": 365, "2Y": 730, "5Y": 1825, "10Y": 3650,
@@ -215,7 +222,7 @@ def fetch_price_history(ticker, start, end):
     return yf.Ticker(ticker).history(start=start, end=end)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def fetch_av_eps(ticker):
     """Fetch full quarterly reported-EPS history from Alpha Vantage.
     Returns (series_or_None, status_message).
@@ -282,15 +289,28 @@ def _fetch_with_retry(fn, attempts=3, base_delay=0.6):
     return None
 
 
-@st.cache_data(ttl=1800)
+def _info_has_fundamentals(info):
+    """True only if `info` actually carries the headline metrics the Key
+    Fundamentals table needs. A throttled Yahoo response can be a *non-empty*
+    dict that still lacks all of these — that case must trigger the Alpha
+    Vantage fallback, not be accepted as good data (the cause of N/A tables)."""
+    if not info:
+        return False
+    return any(
+        info.get(k) is not None
+        for k in ("marketCap", "trailingPE", "trailingEps", "totalRevenue")
+    )
+
+
 def fetch_av_overview(ticker):
     """Fetch company fundamentals from Alpha Vantage's OVERVIEW endpoint and map
     them onto yfinance-style `info` keys. Returns (info_dict_or_None, status).
 
     Key-based and not subject to Yahoo's per-IP rate limiting, so this is the
     fallback that keeps the Key Fundamentals table populated when Yahoo throttles
-    the shared cloud IP. Costs one Alpha Vantage call (25/day free tier), so it's
-    only invoked when yfinance `info` is unavailable."""
+    the shared cloud IP. Not memoized directly — successful results are cached by
+    the completeness-aware get_fundamentals() layer, while failures are left
+    uncached so the next refresh retries instead of serving a stale blank."""
     if not ALPHAVANTAGE_API_KEY or ALPHAVANTAGE_API_KEY == "your_alphavantage_api_key_here":
         return None, "no API key configured"
     try:
@@ -344,7 +364,6 @@ def fetch_av_overview(ticker):
         return None, f"request failed: {e}"
 
 
-@st.cache_data(ttl=600)
 def fetch_fundamentals(ticker):
     """Fetch fundamentals for one ticker. NEVER raises.
 
@@ -366,9 +385,9 @@ def fetch_fundamentals(ticker):
         stock = None
 
     if stock is not None:
-        info = _fetch_with_retry(lambda: stock.info)
-        if not _is_empty(info):
-            out["info"] = info
+        info = _fetch_with_retry(lambda: stock.info) or {}
+        out["info"] = info  # may be partial; the fallback below fills it if needed
+        if _info_has_fundamentals(info):
             out["info_source"] = "Yahoo Finance"
         getters = {
             "financials": lambda: stock.financials,
@@ -385,14 +404,46 @@ def fetch_fundamentals(ticker):
             except Exception:
                 pass
 
-    # Fallback: source the Key Fundamentals table from Alpha Vantage when Yahoo's
-    # `info` is unavailable (the usual cause of an all-N/A table).
-    if _is_empty(out["info"]):
+    # Fallback: when Yahoo's `info` is missing the headline metrics — whether it
+    # came back empty OR as a partial dict — source the table from Alpha Vantage.
+    # (The partial-dict case is the subtle one that used to slip through and leave
+    # the table N/A.) Merge so any usable Yahoo fields are kept and AV fills the rest.
+    if not _info_has_fundamentals(out["info"]):
         av_info, _ = fetch_av_overview(ticker)
-        if av_info:
-            out["info"] = av_info
+        if _info_has_fundamentals(av_info):
+            merged = dict(av_info)
+            for k, v in (out["info"] or {}).items():
+                if v is not None:
+                    merged[k] = v
+            out["info"] = merged
             out["info_source"] = "Alpha Vantage"
     return out
+
+
+def get_fundamentals(ticker):
+    """Completeness-aware cache around fetch_fundamentals().
+
+    A *complete* result (the table's headline metrics are present) is cached for
+    COMPLETE_TTL; an *incomplete* one (Yahoo and Alpha Vantage both throttled at
+    fetch time) is cached only briefly so the next render retries instead of
+    serving stale N/A for the full TTL. This is what stops a transient rate-limit
+    from "sticking" for minutes. The long TTL on good data also caps Alpha Vantage
+    usage well under the 25/day free-tier limit."""
+    COMPLETE_TTL = 3600   # good fundamentals change slowly
+    FAILED_TTL = 45       # retry soon after a throttled fetch
+    cache = st.session_state.setdefault("_fund_cache", {})
+    entry = cache.get(ticker)
+    if entry:
+        ttl = COMPLETE_TTL if entry["complete"] else FAILED_TTL
+        if time.time() - entry["ts"] < ttl:
+            return entry["data"]
+    data = fetch_fundamentals(ticker)
+    cache[ticker] = {
+        "data": data,
+        "ts": time.time(),
+        "complete": _info_has_fundamentals(data.get("info")),
+    }
+    return data
 
 
 def build_eps_series(data):
@@ -433,12 +484,15 @@ with st.spinner("Fetching stock data..."):
     failed = []
     degraded = []          # statement-level charts throttled (revenue/net income/debt)
     av_fundamentals = []   # Key Fundamentals table served via Alpha Vantage fallback
+    incomplete = []        # table N/A: Yahoo AND Alpha Vantage both unavailable
     for ticker in tickers:
         hist = fetch_price_history(ticker, price_fetch_start, end_date)
         if hist is None or hist.empty:
             failed.append(ticker)
             continue
-        fund = fetch_fundamentals(ticker)
+        fund = get_fundamentals(ticker)
+        if not _info_has_fundamentals(fund.get("info")):
+            incomplete.append(ticker)
         info = dict(fund.get("info") or {})
         if fund.get("info_source") == "Alpha Vantage":
             av_fundamentals.append(ticker)
@@ -469,6 +523,14 @@ if failed:
 if not stock_data:
     st.warning("No valid stock data found. Check your ticker symbols.")
     st.stop()
+
+if incomplete:
+    st.warning(
+        "Key Fundamentals are temporarily incomplete for: " + ", ".join(incomplete)
+        + " — both Yahoo Finance and the Alpha Vantage fallback are rate-limited "
+        "right now. This usually clears within a minute; press **🔄 Refresh data** "
+        "above to retry."
+    )
 
 if av_fundamentals:
     st.info(
@@ -994,7 +1056,7 @@ if deep_ticker_input:
     dd_hist = fetch_price_history(deep_ticker_input, dd_start_date, dd_end_date)
 
     if dd_hist is not None and not dd_hist.empty:
-        dd_fund = fetch_fundamentals(deep_ticker_input)
+        dd_fund = get_fundamentals(deep_ticker_input)
         dd_info = dd_fund["info"]
         dd_av_series, _ = fetch_av_eps(deep_ticker_input)
         dd_data = {
