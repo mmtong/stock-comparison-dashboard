@@ -557,6 +557,28 @@ def ticker_label(ticker, info=None):
     return f"{name} ({ticker})" if name else ticker
 
 
+def max_drawdown_stats(close, start=None):
+    """Largest peak-to-trough decline of a daily close series (optionally only
+    from `start`), the date of the trough, and the number of months from the
+    trough until the price first regains its prior peak (None = not yet
+    recovered). Returns None if there isn't enough data."""
+    s = close.dropna().sort_index()
+    if getattr(s.index, "tz", None) is not None:
+        s.index = s.index.tz_localize(None)
+    if start is not None:
+        s = s[s.index >= start]
+    if len(s) < 2:
+        return None
+    running_max = s.cummax()
+    drawdown = s / running_max - 1.0
+    trough_date = drawdown.idxmin()
+    peak_value = float(s.loc[:trough_date].max())  # the prior peak to recover to
+    after = s[s.index > trough_date]
+    regained = after[after >= peak_value]
+    months = (regained.index[0] - trough_date).days / 30.44 if not regained.empty else None
+    return {"max_dd": float(drawdown.min()), "trough_date": trough_date, "months": months}
+
+
 # --- Key Metrics Table ---
 st.header("Key Fundamentals")
 
@@ -589,6 +611,16 @@ for ticker, data in stock_data.items():
     if earnings_growth is None:
         earnings_growth = info.get("_av_earnings_growth_yoy")
 
+    # Max drawdown over the shared 5-year window (pre-formatted as strings so the
+    # numeric column formatters below leave them untouched).
+    dd = max_drawdown_stats(data["history"]["Close"], start=start_date)
+    if dd:
+        max_dd_str = f"{dd['max_dd'] * 100:.1f}%"
+        dd_date_str = dd["trough_date"].strftime("%b %d, %Y")
+        recover_str = f"{dd['months']:.1f}" if dd["months"] is not None else "Not yet recovered"
+    else:
+        max_dd_str = dd_date_str = recover_str = "N/A"
+
     metrics_rows.append({
         "Ticker": ticker,
         "Company": info.get("shortName", "N/A"),
@@ -604,6 +636,9 @@ for ticker, data in stock_data.items():
         "Dividend Yield": info.get("trailingAnnualDividendYield"),
         "% From 52W High": pct_from_high,
         "% From 52W Low": pct_from_low,
+        "Max Drawdown (5Y)": max_dd_str,
+        "Max Drawdown Date": dd_date_str,
+        "Months to Recover": recover_str,
     })
 
 metrics_df = pd.DataFrame(metrics_rows).set_index("Ticker")
@@ -674,6 +709,11 @@ st.caption(
     "\\* Forward EPS is the analyst consensus forward EPS estimate (Yahoo Finance); "
     "Forward P/E = current price ÷ Forward EPS. Based on "
     + "; ".join(analyst_parts) + "."
+)
+st.caption(
+    "Max Drawdown is the largest peak-to-trough decline in daily close over the "
+    "last 5 years, dated at the trough; Months to Recover counts from the trough "
+    "until the price first regains its prior peak (\"Not yet recovered\" if it hasn't)."
 )
 
 # --- Price Chart ---
