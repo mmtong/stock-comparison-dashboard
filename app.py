@@ -6,6 +6,7 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import requests
 import os
+import io
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -1229,7 +1230,8 @@ st.caption(
     "Quarterly EPS — Alpha Vantage · "
     "Fundamentals (income statement, balance sheet, ratios) — Yahoo Finance via yfinance, "
     "with Alpha Vantage (OVERVIEW) fallback for the Key Fundamentals table · "
-    "Company search — Yahoo Finance. "
+    "Company search — Yahoo Finance · "
+    "US inflation (CPI/PCE) — FRED (Federal Reserve Bank of St. Louis). "
     "Metrics may be delayed or unavailable for some tickers."
 )
 
@@ -1242,3 +1244,93 @@ _av_left = max(0, AV_DAILY_LIMIT - _av_used)
 av_usage_placeholder.caption(
     f"Alpha Vantage free API calls today (est.): {_av_used} / {AV_DAILY_LIMIT} used · {_av_left} left"
 )
+
+
+# --- US Inflation heatmaps (CPI / PCE), sourced from FRED ---
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+# All seasonally adjusted (matches the headline YoY figures BLS/BEA report).
+INFLATION_SERIES = [
+    ("Year over Year (CPI)", "CPIAUCSL"),
+    ("Year over Year (CPI ex Energy & Food)", "CPILFESL"),
+    ("Year over Year (PCE)", "PCEPI"),
+    ("Year over Year (PCE ex Energy & Food)", "PCEPILFE"),
+]
+
+
+@st.cache_data(ttl=21600)  # 6h; FRED indices update monthly
+def fetch_fred_yoy(series_id):
+    """Fetch a monthly FRED index via its no-API-key CSV endpoint and return the
+    year-over-year % change as a Series indexed by month-start date. The table
+    refreshes automatically as FRED publishes new months. Returns None on error."""
+    try:
+        resp = requests.get(
+            "https://fred.stlouisfed.org/graph/fredgraph.csv",
+            params={"id": series_id}, timeout=20,
+        )
+        resp.raise_for_status()
+        df = pd.read_csv(io.StringIO(resp.text))
+        df.columns = ["date", "val"]
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["val"] = pd.to_numeric(df["val"], errors="coerce")
+        s = df.dropna().set_index("date")["val"].sort_index()
+        if s.empty:
+            return None
+        return (s / s.shift(12) - 1) * 100
+    except Exception:
+        return None
+
+
+def yoy_grid(yoy_series, start_year=2010):
+    """Pivot a monthly YoY series into {year: [Jan..Dec]} of rounded values."""
+    grid = {}
+    for date, val in yoy_series.dropna().items():
+        if date.year < start_year:
+            continue
+        grid.setdefault(date.year, [None] * 12)[date.month - 1] = round(float(val), 1)
+    return grid
+
+
+def _heat_bg(v, vmax):
+    """Red heatmap shade scaled to the table's max; near-zero/negative stays white."""
+    if v is None or v <= 0 or vmax <= 0:
+        return ""
+    alpha = min(v / vmax, 1.0) * 0.75
+    return f"background-color:rgba(211,47,47,{alpha:.3f});"
+
+
+def render_inflation_table(title, grid):
+    years = sorted(grid.keys(), reverse=True)
+    positives = [v for row in grid.values() for v in row if v is not None and v > 0]
+    vmax = max(positives) if positives else 1.0
+    html = ['<div style="overflow-x:auto; margin-bottom:1.4rem;">']
+    html.append(f'<div style="text-align:center; font-weight:700; margin-bottom:4px;">{title}</div>')
+    html.append('<table style="border-collapse:collapse; width:100%; font-size:0.8rem; text-align:center;">')
+    html.append('<tr><th style="padding:4px 6px; border-bottom:1px solid #ccc;"></th>'
+                + ''.join(f'<th style="padding:4px 6px; border-bottom:1px solid #ccc;">{m}</th>' for m in MONTHS)
+                + '</tr>')
+    for y in years:
+        cells = [f'<th style="padding:4px 6px; text-align:right; font-weight:700;">{y}</th>']
+        for v in grid[y]:
+            if v is None:
+                cells.append('<td style="padding:4px 6px;"></td>')
+            else:
+                cells.append(f'<td style="padding:4px 6px; {_heat_bg(v, vmax)} color:#222;">{v:.1f}</td>')
+        html.append('<tr>' + ''.join(cells) + '</tr>')
+    html.append('</table></div>')
+    st.markdown(''.join(html), unsafe_allow_html=True)
+
+
+st.divider()
+st.header("US Inflation — Year over Year (%)")
+st.caption(
+    "Monthly year-over-year change in each price index (seasonally adjusted), from "
+    "FRED. Updates automatically as new data is released; blank cells aren't out yet."
+)
+for _title, _sid in INFLATION_SERIES:
+    _yoy = fetch_fred_yoy(_sid)
+    if _yoy is None:
+        st.caption(f"{_title}: could not load from FRED right now — try Refresh.")
+        continue
+    render_inflation_table(_title, yoy_grid(_yoy, start_year=2010))
