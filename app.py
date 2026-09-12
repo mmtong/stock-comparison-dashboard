@@ -863,77 +863,61 @@ st.caption(f"P/E line smoothed with a {pe_smooth_window(time_range)}-trading-day
 # --- Revenue & Earnings Charts ---
 st.header("Revenue & Earnings")
 
-rev_col, earn_col = st.columns(2)
 
+def quarterly_bar_chart(row_name, y_title):
+    """Grouped quarterly bar chart of a single income-statement line
+    (from Yahoo's quarterly financials), with growth-vs-prior-quarter labels.
+    Returns True if any company had data."""
+    fig = go.Figure()
+    any_data = False
+    for ticker, data in stock_data.items():
+        qf = data.get("quarterly_financials")
+        if qf is None or qf.empty or row_name not in qf.index:
+            continue
+        s = qf.loc[row_name].dropna().sort_index()
+        s = s[(s.index >= start_date) & (s.index <= end_date)]
+        if s.empty:
+            continue
+        any_data = True
+        fig.add_trace(go.Bar(
+            x=s.index,
+            y=s.values,
+            name=ticker_label(ticker),
+            text=growth_labels(s.values),  # % change vs the prior quarter
+            textposition="outside",
+        ))
+    fig.update_layout(
+        yaxis_title=y_title,
+        xaxis_title="Quarter",
+        barmode="group",
+        height=380,
+        template="plotly_white",
+        margin=dict(t=40),
+        yaxis=dict(autorange=True, rangemode="tozero"),
+        xaxis=dict(type="date"),  # autorange: Yahoo provides only a few quarters
+    )
+    fig.update_yaxes(automargin=True, ticksuffix="  ")
+    fig.update_traces(cliponaxis=False)
+    render_chart(fig)
+    return any_data
+
+rev_col, op_col, earn_col = st.columns(3)
 with rev_col:
-    st.subheader("Annual Revenue")
-    fig_rev = go.Figure()
-    for ticker, data in stock_data.items():
-        financials = data["financials"]
-        if financials is not None and not financials.empty and "Total Revenue" in financials.index:
-            revenue = financials.loc["Total Revenue"].dropna().sort_index()
-            growth = revenue.pct_change() * 100
-            labels = [f"{g:+.1f}%" if pd.notna(g) else "" for g in growth.values]
-            fig_rev.add_trace(go.Bar(
-                x=revenue.index.strftime("%Y"),
-                y=revenue.values,
-                name=ticker_label(ticker),
-                text=labels,
-                textposition="outside",
-            ))
-    fig_rev.update_layout(
-        yaxis_title="Revenue (USD)",
-        barmode="group",
-        height=400,
-        template="plotly_white",
-        margin=dict(t=40),
-        yaxis=dict(autorange=True, rangemode="tozero"),
-    )
-    fig_rev.update_yaxes(automargin=True, ticksuffix="  ")
-    fig_rev.update_traces(cliponaxis=False)
-    render_chart(fig_rev)
-
+    st.subheader("Quarterly Revenue")
+    quarterly_bar_chart("Total Revenue", "Revenue (USD)")
+with op_col:
+    st.subheader("Quarterly Operating Income")
+    _op_ok = quarterly_bar_chart("Operating Income", "Operating Income (USD)")
 with earn_col:
-    st.subheader("Annual Net Income")
-    fig_earn = go.Figure()
-    for ticker, data in stock_data.items():
-        financials = data["financials"]
-        if financials is not None and not financials.empty and "Net Income" in financials.index:
-            net_income = financials.loc["Net Income"].dropna().sort_index()
-            values = net_income.values
-            labels = [""]
-            for i in range(1, len(values)):
-                prev, curr = values[i - 1], values[i]
-                if prev == 0:
-                    labels.append("N/A")
-                elif prev < 0 and curr < 0:
-                    pct = (abs(prev) - abs(curr)) / abs(prev) * 100
-                    labels.append(f"{pct:+.1f}%")
-                elif prev < 0 and curr >= 0:
-                    labels.append("Turned Profitable")
-                elif prev > 0 and curr < 0:
-                    labels.append("Turned Negative")
-                else:
-                    pct = (curr / prev - 1) * 100
-                    labels.append(f"{pct:+.1f}%")
-            fig_earn.add_trace(go.Bar(
-                x=net_income.index.strftime("%Y"),
-                y=net_income.values,
-                name=ticker_label(ticker),
-                text=labels,
-                textposition="outside",
-            ))
-    fig_earn.update_layout(
-        yaxis_title="Net Income (USD)",
-        barmode="group",
-        height=400,
-        template="plotly_white",
-        margin=dict(t=40),
-        yaxis=dict(autorange=True, rangemode="tozero"),
-    )
-    fig_earn.update_yaxes(automargin=True, ticksuffix="  ")
-    fig_earn.update_traces(cliponaxis=False)
-    render_chart(fig_earn)
+    st.subheader("Quarterly Net Income")
+    quarterly_bar_chart("Net Income", "Net Income (USD)")
+
+_re_cap = ("Quarterly figures from the income statement (Yahoo Finance); labels show "
+           "growth from the prior quarter. Yahoo provides only the most recent "
+           "quarters, so history here is limited.")
+if not _op_ok:
+    _re_cap += " Operating income isn't reported for some companies."
+st.caption(_re_cap)
 
 # --- Total Debt ---
 st.header("Total Debt to Equity")
