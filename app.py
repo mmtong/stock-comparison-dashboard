@@ -264,6 +264,63 @@ def fetch_av_eps(ticker):
         return None, f"request failed: {e}"
 
 
+@st.cache_data(ttl=21600)  # 6h; quarterly statements change only a few times a year
+def fetch_av_income_statement(ticker):
+    """Quarterly income statement from Alpha Vantage — up to ~20 years of history,
+    versus the ~5 quarters Yahoo's quarterly financials provide. Returns a
+    DataFrame indexed by quarter-end date with numeric totalRevenue /
+    operatingIncome / netIncome / grossProfit columns, or None on error."""
+    if not ALPHAVANTAGE_API_KEY or ALPHAVANTAGE_API_KEY == "your_alphavantage_api_key_here":
+        return None
+    try:
+        # Real network call only on a cache miss, so it counts genuine AV usage.
+        record_av_call()
+        resp = requests.get(
+            "https://www.alphavantage.co/query",
+            params={"function": "INCOME_STATEMENT", "symbol": ticker, "apikey": ALPHAVANTAGE_API_KEY},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        reports = resp.json().get("quarterlyReports")
+        if not reports:
+            return None
+        df = pd.DataFrame(reports)
+        df["fiscalDateEnding"] = pd.to_datetime(df["fiscalDateEnding"], errors="coerce")
+        for col in ("totalRevenue", "operatingIncome", "netIncome", "grossProfit"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["fiscalDateEnding"]).set_index("fiscalDateEnding").sort_index()
+        return df if not df.empty else None
+    except Exception:
+        return None
+
+
+# Maps the income-statement row names used in the charts to Alpha Vantage's
+# quarterly field names, so charts can prefer AV's deep history over Yahoo's.
+_AV_INCOME_MAP = {
+    "Total Revenue": "totalRevenue",
+    "Operating Income": "operatingIncome",
+    "Net Income": "netIncome",
+}
+
+
+def quarterly_income_series(data, row_name):
+    """Quarterly series for an income-statement line, preferring Alpha Vantage
+    (deep history) and falling back to Yahoo's quarterly financials (~5 quarters)."""
+    av = data.get("av_income")
+    av_col = _AV_INCOME_MAP.get(row_name)
+    if av is not None and av_col and av_col in av.columns:
+        s = av[av_col].dropna().sort_index()
+        if not s.empty:
+            return s
+    qf = data.get("quarterly_financials")
+    if qf is not None and not qf.empty and row_name in qf.index:
+        s = qf.loc[row_name].dropna().sort_index()
+        if not s.empty:
+            return s
+    return None
+
+
 def _is_empty(val):
     """True if a fetched value is missing/blank (None, empty DataFrame/Series,
     empty dict/list). Used to decide whether a retry or fallback is needed."""
@@ -514,6 +571,7 @@ with st.spinner("Fetching stock data..."):
         av_series, av_status = fetch_av_eps(ticker)
         stock_data[ticker]["av_eps"] = av_series
         stock_data[ticker]["av_status"] = av_status
+        stock_data[ticker]["av_income"] = fetch_av_income_statement(ticker)
 
 if failed:
     st.error(
@@ -865,16 +923,15 @@ st.header("Revenue & Earnings")
 
 
 def quarterly_bar_chart(row_name, y_title):
-    """Grouped quarterly bar chart of a single income-statement line
-    (from Yahoo's quarterly financials), with growth-vs-prior-quarter labels.
+    """Grouped quarterly bar chart of a single income-statement line (Alpha
+    Vantage deep history, Yahoo fallback), with growth-vs-prior-quarter labels.
     Returns True if any company had data."""
     fig = go.Figure()
     any_data = False
     for ticker, data in stock_data.items():
-        qf = data.get("quarterly_financials")
-        if qf is None or qf.empty or row_name not in qf.index:
+        s = quarterly_income_series(data, row_name)
+        if s is None:
             continue
-        s = qf.loc[row_name].dropna().sort_index()
         s = s[(s.index >= start_date) & (s.index <= end_date)]
         if s.empty:
             continue
@@ -894,7 +951,7 @@ def quarterly_bar_chart(row_name, y_title):
         template="plotly_white",
         margin=dict(t=40),
         yaxis=dict(autorange=True, rangemode="tozero"),
-        xaxis=dict(type="date"),  # autorange: Yahoo provides only a few quarters
+        xaxis=dict(range=shared_x_range, type="date"),
     )
     fig.update_yaxes(automargin=True, ticksuffix="  ")
     fig.update_traces(cliponaxis=False)
@@ -908,9 +965,8 @@ _op_ok = quarterly_bar_chart("Operating Income", "Operating Income (USD)")
 st.subheader("Quarterly Net Income")
 quarterly_bar_chart("Net Income", "Net Income (USD)")
 
-_re_cap = ("Quarterly figures from the income statement (Yahoo Finance); labels show "
-           "growth from the prior quarter. Yahoo provides only the most recent "
-           "quarters, so history here is limited.")
+_re_cap = ("Quarterly figures from the income statement (Alpha Vantage, with Yahoo "
+           "Finance fallback); labels show growth from the prior quarter.")
 if not _op_ok:
     _re_cap += " Operating income isn't reported for some companies."
 st.caption(_re_cap)
@@ -924,23 +980,22 @@ if st.session_state.get("oi_ni_ticker") not in _oi_options:
     st.session_state.pop("oi_ni_ticker", None)
 oi_ni_ticker = st.selectbox("Company", _oi_options, key="oi_ni_ticker")
 
-_oi_qf = stock_data.get(oi_ni_ticker, {}).get("quarterly_financials")
+_oi_data = stock_data.get(oi_ni_ticker, {})
 fig_oi_ni = go.Figure()
 _oi_ni_any = False
-if _oi_qf is not None and not _oi_qf.empty:
-    for row_name, color in [("Operating Income", "#1f77b4"), ("Net Income", "#2ca02c")]:
-        if row_name not in _oi_qf.index:
-            continue
-        s = _oi_qf.loc[row_name].dropna().sort_index()
-        s = s[(s.index >= start_date) & (s.index <= end_date)]
-        if s.empty:
-            continue
-        _oi_ni_any = True
-        fig_oi_ni.add_trace(go.Bar(
-            x=s.index, y=s.values, name=row_name, marker_color=color,
-            text=growth_labels(s.values),  # % change vs the prior quarter
-            textposition="outside",
-        ))
+for row_name, color in [("Operating Income", "#1f77b4"), ("Net Income", "#2ca02c")]:
+    s = quarterly_income_series(_oi_data, row_name)
+    if s is None:
+        continue
+    s = s[(s.index >= start_date) & (s.index <= end_date)]
+    if s.empty:
+        continue
+    _oi_ni_any = True
+    fig_oi_ni.add_trace(go.Bar(
+        x=s.index, y=s.values, name=row_name, marker_color=color,
+        text=growth_labels(s.values),  # % change vs the prior quarter
+        textposition="outside",
+    ))
 
 if _oi_ni_any:
     fig_oi_ni.update_layout(
@@ -951,13 +1006,13 @@ if _oi_ni_any:
         template="plotly_white",
         margin=dict(t=40),
         yaxis=dict(autorange=True, rangemode="tozero"),
-        xaxis=dict(type="date"),  # autorange: Yahoo provides only a few quarters
+        xaxis=dict(range=shared_x_range, type="date"),
     )
     fig_oi_ni.update_yaxes(automargin=True, ticksuffix="  ")
     fig_oi_ni.update_traces(cliponaxis=False)
     render_chart(fig_oi_ni)
     st.caption(f"Quarterly operating income vs net income for {ticker_label(oi_ni_ticker)} "
-               "(Yahoo Finance); labels show growth from the prior quarter.")
+               "(Alpha Vantage, with Yahoo Finance fallback); labels show growth from the prior quarter.")
 else:
     st.caption(f"Operating/net income is unavailable for {oi_ni_ticker} right now — try 🔄 Refresh data above.")
 
@@ -1062,19 +1117,19 @@ st.header("Quarterly Revenue Trend")
 
 fig_qrev = go.Figure()
 for ticker, data in stock_data.items():
-    qf = data["quarterly_financials"]
-    if qf is not None and not qf.empty and "Total Revenue" in qf.index:
-        q_revenue = qf.loc["Total Revenue"].dropna().sort_index()
-        q_revenue = q_revenue[(q_revenue.index >= start_date) & (q_revenue.index <= end_date)].sort_index()
-        if len(q_revenue) > 0:
-            fig_qrev.add_trace(go.Scatter(
-                x=q_revenue.index,
-                y=q_revenue.values,
-                mode="lines+markers+text",
-                text=growth_labels(q_revenue.values),
-                textposition="top center",
-                name=ticker_label(ticker),
-            ))
+    q_revenue = quarterly_income_series(data, "Total Revenue")
+    if q_revenue is None:
+        continue
+    q_revenue = q_revenue[(q_revenue.index >= start_date) & (q_revenue.index <= end_date)].sort_index()
+    if len(q_revenue) > 0:
+        fig_qrev.add_trace(go.Scatter(
+            x=q_revenue.index,
+            y=q_revenue.values,
+            mode="lines+markers+text",
+            text=growth_labels(q_revenue.values),
+            textposition="top center",
+            name=ticker_label(ticker),
+        ))
 
 fig_qrev.update_layout(
     yaxis_title="Revenue (USD)",
@@ -1086,6 +1141,10 @@ fig_qrev.update_layout(
 )
 fig_qrev.update_traces(cliponaxis=False)
 render_chart(fig_qrev)
+st.caption(
+    "Quarterly revenue (Alpha Vantage, with Yahoo Finance fallback); labels show "
+    "growth from the prior quarter."
+)
 
 # --- Dividend Yield Comparison ---
 st.header("Dividend Comparison")
