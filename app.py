@@ -147,6 +147,7 @@ st.session_state.cmp_tickers = st.multiselect(
 # to a transient rate limit and you don't want to wait for the cache to expire.
 if st.button("🔄 Refresh data", help="Clear cached data and re-fetch from the providers"):
     st.session_state.pop("_fund_cache", None)
+    st.session_state.pop("_av_income_cache", None)
     st.cache_data.clear()
     st.rerun()
 
@@ -264,16 +265,19 @@ def fetch_av_eps(ticker):
         return None, f"request failed: {e}"
 
 
-@st.cache_data(ttl=21600)  # 6h; quarterly statements change only a few times a year
 def fetch_av_income_statement(ticker):
     """Quarterly income statement from Alpha Vantage — up to ~20 years of history,
     versus the ~5 quarters Yahoo's quarterly financials provide. Returns a
     DataFrame indexed by quarter-end date with numeric totalRevenue /
-    operatingIncome / netIncome / grossProfit columns, or None on error."""
+    operatingIncome / netIncome / grossProfit columns, or None on error.
+
+    Not memoized directly: successes are cached (for hours) by get_av_income(),
+    while failures — usually an Alpha Vantage 5/min or 25/day rate limit — are
+    left uncached so the next render retries instead of sticking on the short
+    Yahoo fallback."""
     if not ALPHAVANTAGE_API_KEY or ALPHAVANTAGE_API_KEY == "your_alphavantage_api_key_here":
         return None
     try:
-        # Real network call only on a cache miss, so it counts genuine AV usage.
         record_av_call()
         resp = requests.get(
             "https://www.alphavantage.co/query",
@@ -293,6 +297,24 @@ def fetch_av_income_statement(ticker):
         return df if not df.empty else None
     except Exception:
         return None
+
+
+def get_av_income(ticker):
+    """Completeness-aware cache around fetch_av_income_statement: cache a
+    successful result for hours, but retry a failure after ~60s so a transient
+    Alpha Vantage rate limit doesn't leave a company stuck on Yahoo's ~5-quarter
+    fallback for the full TTL."""
+    COMPLETE_TTL = 21600  # 6h; quarterly statements change only a few times a year
+    FAILED_TTL = 60       # retry soon after a rate-limited call
+    cache = st.session_state.setdefault("_av_income_cache", {})
+    entry = cache.get(ticker)
+    if entry:
+        ttl = COMPLETE_TTL if entry["ok"] else FAILED_TTL
+        if time.time() - entry["ts"] < ttl:
+            return entry["data"]
+    data = fetch_av_income_statement(ticker)
+    cache[ticker] = {"data": data, "ts": time.time(), "ok": data is not None}
+    return data
 
 
 # Maps the income-statement row names used in the charts to Alpha Vantage's
@@ -571,7 +593,7 @@ with st.spinner("Fetching stock data..."):
         av_series, av_status = fetch_av_eps(ticker)
         stock_data[ticker]["av_eps"] = av_series
         stock_data[ticker]["av_status"] = av_status
-        stock_data[ticker]["av_income"] = fetch_av_income_statement(ticker)
+        stock_data[ticker]["av_income"] = get_av_income(ticker)
 
 if failed:
     st.error(
