@@ -169,9 +169,8 @@ if not tickers:
 end_date = datetime.today()
 start_date = end_date - timedelta(days=range_map[time_range])
 
-# Shared x-axis window used by Stock Price History and P/E Over Time so they
-# share the same time period and scale. (EPS Over Time autoranges, since Yahoo
-# only provides a few quarters of diluted GAAP EPS.)
+# Shared x-axis window used by Stock Price History, EPS Over Time, and P/E Over
+# Time so they share the same time period and scale.
 shared_x_range = [start_date, end_date]
 
 # The Stock Price History chart can show a wider window than the shared 5Y range.
@@ -772,19 +771,21 @@ fig_price.update_layout(
 render_chart(fig_price)
 
 # --- EPS Over Time ---
-st.header("EPS Over Time (Quarterly, Diluted GAAP)")
+st.header("EPS Over Time (Quarterly, Reported)")
 
 fig_eps = go.Figure()
 eps_any = False
+eps_all_quarterly = True
 for ticker, data in stock_data.items():
-    qf = data.get("quarterly_financials")
-    if qf is None or qf.empty or "Diluted EPS" not in qf.index:
+    eps_series, is_quarterly, _ = build_eps_series(data)
+    if eps_series is None or eps_series.empty:
         continue
-    eps_win = qf.loc["Diluted EPS"].dropna().sort_index()
-    eps_win = eps_win[(eps_win.index >= start_date) & (eps_win.index <= end_date)]
+    eps_series = eps_series.sort_index()
+    eps_win = eps_series[(eps_series.index >= start_date) & (eps_series.index <= end_date)]
     if eps_win.empty:
         continue
     eps_any = True
+    eps_all_quarterly = eps_all_quarterly and is_quarterly
     fig_eps.add_trace(go.Bar(
         x=eps_win.index,
         y=eps_win.values,
@@ -794,28 +795,28 @@ for ticker, data in stock_data.items():
     ))
 
 fig_eps.update_layout(
-    yaxis_title="Diluted GAAP EPS ($)",
+    yaxis_title="Reported EPS ($)",
     xaxis_title="Quarter",
     barmode="group",
     height=400,
     template="plotly_white",
     margin=dict(t=40),
     yaxis=dict(autorange=True, rangemode="tozero"),
-    xaxis=dict(type="date"),  # autorange: Yahoo provides only a few quarters
+    xaxis=dict(range=shared_x_range, type="date"),
 )
 fig_eps.update_yaxes(automargin=True, ticksuffix="  ")
 fig_eps.update_traces(cliponaxis=False)
 render_chart(fig_eps)
 if eps_any:
-    st.caption(
-        "Quarterly diluted GAAP EPS from the income statement (Yahoo Finance); "
-        "labels show growth from the prior quarter. Yahoo provides only the most "
-        "recent quarters, so history here is limited."
-    )
+    _eps_cap = ("Quarterly reported EPS (Alpha Vantage, with yfinance fallback); "
+                "labels show growth from the prior quarter.")
+    if not eps_all_quarterly:
+        _eps_cap += " Some companies fall back to annual EPS where quarterly data is unavailable."
+    st.caption(_eps_cap)
 else:
     st.caption(
-        "Quarterly diluted GAAP EPS is unavailable right now — Yahoo Finance is "
-        "rate-limiting. Press 🔄 Refresh data above to retry."
+        "Quarterly EPS is unavailable right now — Yahoo Finance / Alpha Vantage "
+        "are rate-limiting. Press 🔄 Refresh data above to retry."
     )
 
 # --- P/E Over Time ---
