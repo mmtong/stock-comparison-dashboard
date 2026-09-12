@@ -1005,30 +1005,44 @@ st.caption("A D/E ratio greater than 1.0 generally indicates debt exceeds equity
 # --- Profit Margin Over Time ---
 st.header("Profit Margin Over Time")
 
+_margin_colors = px.colors.qualitative.Plotly
 fig_margin = go.Figure()
-for ticker, data in stock_data.items():
+for i, (ticker, data) in enumerate(stock_data.items()):
     financials = data["financials"]
-    if financials is not None and not financials.empty:
-        has_revenue = "Total Revenue" in financials.index
-        has_income = "Net Income" in financials.index
-        if has_revenue and has_income:
-            revenue = financials.loc["Total Revenue"].dropna().sort_index()
-            net_income = financials.loc["Net Income"].dropna().sort_index()
-            common_idx = revenue.index.intersection(net_income.index)
-            margin = (net_income[common_idx] / revenue[common_idx]) * 100
-            margin = margin[(margin.index >= start_date) & (margin.index <= end_date)].sort_index()
-            if len(margin) > 0:
-                fig_margin.add_trace(go.Scatter(
-                    x=margin.index,
-                    y=margin.values,
-                    mode="lines+markers+text",
-                    text=growth_labels(margin.values),
-                    textposition="top center",
-                    name=ticker_label(ticker),
-                ))
+    if financials is None or financials.empty or "Total Revenue" not in financials.index:
+        continue
+    revenue = financials.loc["Total Revenue"].dropna().sort_index()
+    color = _margin_colors[i % len(_margin_colors)]
+
+    # Net margin (solid line, with year-over-year growth labels).
+    if "Net Income" in financials.index:
+        ni = financials.loc["Net Income"].dropna().sort_index()
+        idx = revenue.index.intersection(ni.index)
+        nm = ((ni[idx] / revenue[idx]) * 100)
+        nm = nm[(nm.index >= start_date) & (nm.index <= end_date)].sort_index()
+        if len(nm) > 0:
+            fig_margin.add_trace(go.Scatter(
+                x=nm.index, y=nm.values, mode="lines+markers+text",
+                text=growth_labels(nm.values), textposition="top center",
+                name=f"{ticker} — Net Margin",
+                line=dict(color=color),
+            ))
+
+    # Operating margin (dashed line, same color as the company's net margin).
+    if "Operating Income" in financials.index:
+        oi = financials.loc["Operating Income"].dropna().sort_index()
+        idx = revenue.index.intersection(oi.index)
+        om = ((oi[idx] / revenue[idx]) * 100)
+        om = om[(om.index >= start_date) & (om.index <= end_date)].sort_index()
+        if len(om) > 0:
+            fig_margin.add_trace(go.Scatter(
+                x=om.index, y=om.values, mode="lines+markers",
+                name=f"{ticker} — Operating Margin",
+                line=dict(color=color, dash="dash"),
+            ))
 
 fig_margin.update_layout(
-    yaxis_title="Net Profit Margin (%)",
+    yaxis_title="Margin (%)",
     xaxis_title="Date",
     height=400,
     template="plotly_white",
@@ -1037,6 +1051,11 @@ fig_margin.update_layout(
 )
 fig_margin.update_traces(cliponaxis=False)
 render_chart(fig_margin)
+st.caption(
+    "Annual margins (Yahoo Finance): net margin (solid) = Net Income ÷ Revenue; "
+    "operating margin (dashed) = Operating Income ÷ Revenue. Labels show the "
+    "year-over-year change in net margin."
+)
 
 # --- Quarterly Revenue Trend ---
 st.header("Quarterly Revenue Trend")
