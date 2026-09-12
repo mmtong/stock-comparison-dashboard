@@ -915,6 +915,47 @@ if not _op_ok:
     _re_cap += " Operating income isn't reported for some companies."
 st.caption(_re_cap)
 
+# Operating income vs net income for a single, user-selected company.
+st.subheader("Operating Income vs Net Income")
+_oi_options = list(stock_data.keys())
+# Drop a stale saved selection (e.g. a company that was removed) so the widget
+# doesn't error trying to restore a value no longer in the options.
+if st.session_state.get("oi_ni_ticker") not in _oi_options:
+    st.session_state.pop("oi_ni_ticker", None)
+oi_ni_ticker = st.selectbox("Company", _oi_options, key="oi_ni_ticker")
+
+_oi_qf = stock_data.get(oi_ni_ticker, {}).get("quarterly_financials")
+fig_oi_ni = go.Figure()
+_oi_ni_any = False
+if _oi_qf is not None and not _oi_qf.empty:
+    for row_name, color in [("Operating Income", "#1f77b4"), ("Net Income", "#2ca02c")]:
+        if row_name not in _oi_qf.index:
+            continue
+        s = _oi_qf.loc[row_name].dropna().sort_index()
+        s = s[(s.index >= start_date) & (s.index <= end_date)]
+        if s.empty:
+            continue
+        _oi_ni_any = True
+        fig_oi_ni.add_trace(go.Bar(x=s.index, y=s.values, name=row_name, marker_color=color))
+
+if _oi_ni_any:
+    fig_oi_ni.update_layout(
+        yaxis_title="USD",
+        xaxis_title="Quarter",
+        barmode="group",
+        height=400,
+        template="plotly_white",
+        margin=dict(t=40),
+        yaxis=dict(autorange=True, rangemode="tozero"),
+        xaxis=dict(type="date"),  # autorange: Yahoo provides only a few quarters
+    )
+    fig_oi_ni.update_yaxes(automargin=True, ticksuffix="  ")
+    fig_oi_ni.update_traces(cliponaxis=False)
+    render_chart(fig_oi_ni)
+    st.caption(f"Quarterly operating income vs net income for {ticker_label(oi_ni_ticker)} (Yahoo Finance).")
+else:
+    st.caption(f"Operating/net income is unavailable for {oi_ni_ticker} right now — try 🔄 Refresh data above.")
+
 # --- Total Debt ---
 st.header("Total Debt to Equity")
 
