@@ -771,26 +771,37 @@ fig_price.update_layout(
 render_chart(fig_price)
 
 # --- EPS Over Time ---
-st.header("EPS Over Time (Yearly)")
+st.header("EPS Over Time (Quarterly)")
 
 fig_eps = go.Figure()
+eps_traces = []
+eps_all_quarterly = True
 for ticker, data in stock_data.items():
-    ist = data.get("income_stmt")
-    if ist is not None and not ist.empty and "Diluted EPS" in ist.index:
-        eps_data = ist.loc["Diluted EPS"].dropna().sort_index()
-        eps_data = eps_data[(eps_data.index >= start_date) & (eps_data.index <= end_date)].sort_index()
-        if len(eps_data) > 0:
-            fig_eps.add_trace(go.Bar(
-                x=eps_data.index,
-                y=eps_data.values,
-                name=ticker_label(ticker),
-                text=growth_labels(eps_data.values),
-                textposition="outside",
-            ))
+    eps_series, is_quarterly, _ = build_eps_series(data)
+    if eps_series is None or eps_series.empty:
+        continue
+    eps_series = eps_series.sort_index()
+    eps_win = eps_series[(eps_series.index >= start_date) & (eps_series.index <= end_date)]
+    if eps_win.empty:
+        continue
+    eps_all_quarterly = eps_all_quarterly and is_quarterly
+    eps_traces.append((ticker, eps_win))
+
+# Per-bar growth labels get crowded once quarterly bars from multiple companies
+# are grouped, so only label them when a single company is shown.
+eps_show_labels = len(eps_traces) == 1
+for ticker, eps_win in eps_traces:
+    fig_eps.add_trace(go.Bar(
+        x=eps_win.index,
+        y=eps_win.values,
+        name=ticker_label(ticker),
+        text=growth_labels(eps_win.values) if eps_show_labels else None,
+        textposition="outside",
+    ))
 
 fig_eps.update_layout(
     yaxis_title="EPS ($)",
-    xaxis_title="Date",
+    xaxis_title="Quarter",
     barmode="group",
     height=400,
     template="plotly_white",
@@ -801,7 +812,12 @@ fig_eps.update_layout(
 fig_eps.update_yaxes(automargin=True, ticksuffix="  ")
 fig_eps.update_traces(cliponaxis=False)
 render_chart(fig_eps)
-st.caption("Annual diluted EPS from the income statement (Yahoo Finance). Labels show year-over-year growth.")
+_eps_cap = "Quarterly reported EPS (Alpha Vantage, with yfinance fallback)."
+if eps_show_labels:
+    _eps_cap += " Labels show quarter-over-quarter growth."
+if not eps_all_quarterly:
+    _eps_cap += " Some companies fall back to annual EPS where quarterly data is unavailable."
+st.caption(_eps_cap)
 
 # --- P/E Over Time ---
 st.header("P/E Ratio Over Time")
