@@ -936,7 +936,11 @@ if _oi_qf is not None and not _oi_qf.empty:
         if s.empty:
             continue
         _oi_ni_any = True
-        fig_oi_ni.add_trace(go.Bar(x=s.index, y=s.values, name=row_name, marker_color=color))
+        fig_oi_ni.add_trace(go.Bar(
+            x=s.index, y=s.values, name=row_name, marker_color=color,
+            text=growth_labels(s.values),  # % change vs the prior quarter
+            textposition="outside",
+        ))
 
 if _oi_ni_any:
     fig_oi_ni.update_layout(
@@ -952,7 +956,8 @@ if _oi_ni_any:
     fig_oi_ni.update_yaxes(automargin=True, ticksuffix="  ")
     fig_oi_ni.update_traces(cliponaxis=False)
     render_chart(fig_oi_ni)
-    st.caption(f"Quarterly operating income vs net income for {ticker_label(oi_ni_ticker)} (Yahoo Finance).")
+    st.caption(f"Quarterly operating income vs net income for {ticker_label(oi_ni_ticker)} "
+               "(Yahoo Finance); labels show growth from the prior quarter.")
 else:
     st.caption(f"Operating/net income is unavailable for {oi_ni_ticker} right now — try 🔄 Refresh data above.")
 
