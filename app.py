@@ -901,16 +901,12 @@ def quarterly_bar_chart(row_name, y_title):
     render_chart(fig)
     return any_data
 
-rev_col, op_col, earn_col = st.columns(3)
-with rev_col:
-    st.subheader("Quarterly Revenue")
-    quarterly_bar_chart("Total Revenue", "Revenue (USD)")
-with op_col:
-    st.subheader("Quarterly Operating Income")
-    _op_ok = quarterly_bar_chart("Operating Income", "Operating Income (USD)")
-with earn_col:
-    st.subheader("Quarterly Net Income")
-    quarterly_bar_chart("Net Income", "Net Income (USD)")
+st.subheader("Quarterly Revenue")
+quarterly_bar_chart("Total Revenue", "Revenue (USD)")
+st.subheader("Quarterly Operating Income")
+_op_ok = quarterly_bar_chart("Operating Income", "Operating Income (USD)")
+st.subheader("Quarterly Net Income")
+quarterly_bar_chart("Net Income", "Net Income (USD)")
 
 _re_cap = ("Quarterly figures from the income statement (Yahoo Finance); labels show "
            "growth from the prior quarter. Yahoo provides only the most recent "
