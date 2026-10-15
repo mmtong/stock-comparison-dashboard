@@ -1419,6 +1419,11 @@ def fetch_fred_yoy(series_id):
         s = df.dropna().set_index("date")["val"].sort_index()
         if s.empty:
             return None
+        # Reindex to a complete monthly range before the 12-period shift, so YoY
+        # aligns by actual calendar month. If a month is missing from the FRED
+        # series (it happens), a positional .shift(12) would otherwise compare
+        # against the wrong base month and skew every YoY after the gap.
+        s = s.reindex(pd.date_range(s.index.min(), s.index.max(), freq="MS"))
         return (s / s.shift(12) - 1) * 100
     except Exception:
         return None
